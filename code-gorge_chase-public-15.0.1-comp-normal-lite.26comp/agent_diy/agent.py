@@ -33,7 +33,7 @@ class Agent(BaseAgent):
             betas=(0.9, 0.999),
             eps=1e-8,
         )
-        self.algorithm = Algorithm(self.model, self.optimizer, None, self.device, logger, monitor)
+        self.algorithm = Algorithm(self.model, self.optimizer, self.device, logger, monitor)
         self.preprocessor = Preprocessor()
         self.last_action = -1
         self.logger = logger

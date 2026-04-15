@@ -15,7 +15,7 @@ from agent_diy.conf.conf import Config
 
 
 class Algorithm:
-    def __init__(self, model, optimizer, scheduler=None, device=None, logger=None, monitor=None):
+    def __init__(self, model, optimizer, device=None, logger=None, monitor=None):
         self.device = device
         self.model = model
         self.optimizer = optimizer
