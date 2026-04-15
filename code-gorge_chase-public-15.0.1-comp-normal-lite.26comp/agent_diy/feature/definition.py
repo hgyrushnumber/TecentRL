@@ -57,16 +57,24 @@ def _calc_gae(list_sample_data):
     计算广义优势估计（GAE）。
     δ_t = r_t + γ * V(s_{t+1}) - V(s_t)
     A_t = δ_t + (γλ) * δ_{t+1} + (γλ)^2 * δ_{t+2} + ...
+
+    注意：sample.value / reward / next_value 均为 1D numpy array，
+    必须用 float() 标量化后再做 GAE 累加，否则 gae 会变成 array，
+    导致后续 torch.stack 维度错误引发训练崩溃。
     """
     gae = 0.0
     gamma = Config.GAMMA
     lamda = Config.LAMDA
     for sample in reversed(list_sample_data):
-        delta = -sample.value + sample.reward + gamma * sample.next_value
+        # 显式转为 float 标量，防止 array 污染 gae 累加
+        v = float(sample.value.flat[0])
+        r = float(sample.reward.flat[0])
+        nv = float(sample.next_value.flat[0])
+        delta = r + gamma * nv - v
         gae = gae * gamma * lamda + delta
-        sample.advantage = gae
-        # reward_sum 作为价值目标（GAE + baseline）
-        sample.reward_sum = gae + sample.value
+        # 写回时保持 1D array 形状，与 SampleData 字段维度一致
+        sample.advantage = np.array([gae], dtype=np.float32)
+        sample.reward_sum = np.array([gae + v], dtype=np.float32)
 
 
 def reward_shaping(frame_no, score, terminated, truncated, remain_info, _remain_info, obs, _obs):

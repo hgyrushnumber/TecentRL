@@ -120,8 +120,15 @@ class Agent(BaseAgent):
             self.logger.info(f"save model {model_file_path} successfully")
 
     def load_model(self, path=None, id="1"):
-        """Load model checkpoint. / 加载模型检查点。"""
+        """Load model checkpoint. / 加载模型检查点。
+        若文件不存在（如训练首局），跳过加载而非抛异常。
+        """
+        import os
         model_file_path = f"{path}/model.ckpt-{str(id)}.pkl"
+        if not os.path.exists(model_file_path):
+            if self.logger:
+                self.logger.info(f"model file {model_file_path} not found, skip loading")
+            return
         self.model.load_state_dict(torch.load(model_file_path, map_location=self.device))
         if self.logger:
             self.logger.info(f"load model {model_file_path} successfully")
