@@ -5,9 +5,6 @@
 ###########################################################################
 """
 Author: Tencent AI Arena Authors
-
-Agent class for Gorge Chase DIY (Enhanced PPO).
-峡谷追猎 DIY Agent 主类（增强版 PPO）。
 """
 
 import torch
@@ -30,25 +27,13 @@ class Agent(BaseAgent):
         torch.manual_seed(0)
         self.device = device
         self.model = Model(device).to(self.device)
-
         self.optimizer = torch.optim.Adam(
             params=self.model.parameters(),
             lr=Config.INIT_LEARNING_RATE_START,
             betas=(0.9, 0.999),
             eps=1e-8,
         )
-
-        # 线性学习率衰减 scheduler
-        self.scheduler = torch.optim.lr_scheduler.LinearLR(
-            self.optimizer,
-            start_factor=1.0,
-            end_factor=Config.LR_END / Config.INIT_LEARNING_RATE_START,
-            total_iters=Config.LR_DECAY_STEPS,
-        )
-
-        self.algorithm = Algorithm(
-            self.model, self.optimizer, self.scheduler, self.device, logger, monitor
-        )
+        self.algorithm = Algorithm(self.model, self.optimizer, None, self.device, logger, monitor)
         self.preprocessor = Preprocessor()
         self.last_action = -1
         self.logger = logger
@@ -56,19 +41,11 @@ class Agent(BaseAgent):
         super().__init__(agent_type, device, logger, monitor)
 
     def reset(self, env_obs=None):
-        """Reset per-episode state. / 每局开始时重置状态。"""
         self.preprocessor.reset()
         self.last_action = -1
 
     def observation_process(self, env_obs, preprocessor=None, extra_info=None):
-        """Convert raw env_obs to ObsData and remain_info.
-
-        将原始观测转换为 ObsData 和 remain_info。
-        preprocessor 参数保留兼容 diy workflow 接口（内部使用 self.preprocessor）。
-        """
-        feature, legal_action, reward = self.preprocessor.feature_process(
-            env_obs, self.last_action
-        )
+        feature, legal_action, reward = self.preprocessor.feature_process(env_obs, self.last_action)
         obs_data = ObsData(
             feature=list(feature),
             legal_action=legal_action,
@@ -77,10 +54,6 @@ class Agent(BaseAgent):
         return obs_data, remain_info
 
     def predict(self, list_obs_data):
-        """Stochastic inference for training (exploration).
-
-        训练时随机采样动作（探索）。
-        """
         feature = list_obs_data[0].feature
         legal_action = list_obs_data[0].legal_action
 
@@ -99,20 +72,14 @@ class Agent(BaseAgent):
         ]
 
     def exploit(self, env_obs):
-        """Greedy inference for evaluation.
-
-        评估时贪心选择动作（利用）。
-        """
         obs_data, _ = self.observation_process(env_obs)
         act_data = self.predict([obs_data])
         return self.action_process(act_data[0], is_stochastic=False)
 
     def learn(self, list_sample_data):
-        """Train the model. / 训练模型。"""
         return self.algorithm.learn(list_sample_data)
 
     def save_model(self, path=None, id="1"):
-        """Save model checkpoint. / 保存模型检查点。"""
         model_file_path = f"{path}/model.ckpt-{str(id)}.pkl"
         state_dict_cpu = {k: v.clone().cpu() for k, v in self.model.state_dict().items()}
         torch.save(state_dict_cpu, model_file_path)
@@ -120,33 +87,17 @@ class Agent(BaseAgent):
             self.logger.info(f"save model {model_file_path} successfully")
 
     def load_model(self, path=None, id="1"):
-        """Load model checkpoint. / 加载模型检查点。
-        若文件不存在（如训练首局），跳过加载而非抛异常。
-        """
-        import os
         model_file_path = f"{path}/model.ckpt-{str(id)}.pkl"
-        if not os.path.exists(model_file_path):
-            if self.logger:
-                self.logger.info(f"model file {model_file_path} not found, skip loading")
-            return
         self.model.load_state_dict(torch.load(model_file_path, map_location=self.device))
         if self.logger:
             self.logger.info(f"load model {model_file_path} successfully")
 
     def action_process(self, act_data, is_stochastic=True):
-        """Unpack ActData to int action and update last_action.
-
-        解包 ActData 为 int 动作并记录 last_action。
-        """
         action = act_data.action if is_stochastic else act_data.d_action
         self.last_action = int(action[0])
         return int(action[0])
 
     def _run_model(self, feature, legal_action):
-        """Run model inference, return logits, value, prob.
-
-        执行模型推理，返回 logits、value 和动作概率。
-        """
         self.model.set_eval_mode()
         obs_tensor = torch.tensor(np.array([feature]), dtype=torch.float32).to(self.device)
 
@@ -162,7 +113,6 @@ class Agent(BaseAgent):
         return logits_np, value_np, prob
 
     def _legal_soft_max(self, input_hidden, legal_action):
-        """Softmax with legal action masking (numpy). / 合法动作掩码下的 softmax（numpy 版）。"""
         _w, _e = 1e20, 1e-5
         tmp = input_hidden - _w * (1.0 - legal_action)
         tmp_max = np.max(tmp, keepdims=True)
@@ -171,7 +121,6 @@ class Agent(BaseAgent):
         return tmp / (np.sum(tmp, keepdims=True) * 1.00001)
 
     def _legal_sample(self, probs, use_max=False):
-        """Sample action from probability distribution. / 按概率分布采样动作。"""
         if use_max:
             return int(np.argmax(probs))
         return int(np.argmax(np.random.multinomial(1, probs, size=1)))
