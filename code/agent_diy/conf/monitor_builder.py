@@ -5,6 +5,9 @@
 ###########################################################################
 """
 Author: Tencent AI Arena Authors
+
+Monitor panel configuration builder for Gorge Chase.
+峡谷追猎监控面板配置构建器。
 """
 
 
