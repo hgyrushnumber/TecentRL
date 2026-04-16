@@ -210,8 +210,13 @@ class Preprocessor:
                         map_feat[flat_idx] = float(map_info[row][col] != 0)
                     flat_idx += 1
 
-        # Legal action mask (8D) / 合法动作掩码
-        legal_action = [1] * 8
+        # Legal action mask (10D) / 合法动作掩码（包含技能）
+        # [0-7]: 移动方向
+        # [8]: 闪现技能（根据冷却时间判断是否可用）
+        # [9]: 天赋技能（根据冷却时间判断是否可用）
+        legal_action = [1] * 8  # 移动动作默认都合法
+        
+        # 处理移动动作的合法掩码
         if isinstance(legal_act_raw, list) and legal_act_raw:
             if isinstance(legal_act_raw[0], bool):
                 for j in range(min(8, len(legal_act_raw))):
@@ -222,6 +227,19 @@ class Preprocessor:
 
         if sum(legal_action) == 0:
             legal_action = [1] * 8
+        
+        # 添加技能动作的合法性判断
+        # 闪现技能：冷却时间为0时可用
+        flash_ready = (hero.get("flash_cooldown", 0) == 0)
+        legal_action.append(1 if flash_ready else 0)
+        
+        # 天赋技能：尝试从环境获取冷却时间，默认为可用
+        try:
+            talent_cooldown = hero.get("talent_cooldown", 0)
+            talent_ready = (talent_cooldown == 0)
+        except Exception:
+            talent_ready = True  # 如果无法获取，默认可用
+        legal_action.append(1 if talent_ready else 0)
 
         # Progress features (4D) / 进度特征（增加了高级特征）
         step_norm = _norm(self.step_no, self.max_step)
@@ -329,6 +347,37 @@ class Preprocessor:
             except Exception:
                 pass
         
+        # Skill usage reward / 技能使用奖励
+        skill_reward = 0.0
+        
+        # Flash skill reward / 闪现技能奖励
+        # 鼓励在危险时刻使用闪现
+        if last_action == 8:  # 动作8是使用闪现
+            if max_collision_risk > 0.5:  # 高风险时使用闪现
+                skill_reward += 1.0  # 高奖励
+            elif max_collision_risk > 0.3:  # 中等风险时使用闪现
+                skill_reward += 0.5  # 中等奖励
+            else:
+                skill_reward += 0.1  # 低风险时使用闪现，小奖励
+        
+        # Talent skill reward / 天赋技能奖励
+        # 鼓励在合适时机使用天赋技能
+        if last_action == 9:  # 动作9是使用天赋技能
+            # 根据当前情况给予奖励
+            if cur_min_dist_norm < 0.5:  # 怪物较近时使用技能
+                skill_reward += 0.8
+            else:
+                skill_reward += 0.3  # 其他情况使用技能
+        
+        # Potential skill usage incentive / 潜在技能使用激励
+        # 当技能可用且处于危险时，给予小奖励鼓励考虑使用技能
+        skill_potential_reward = 0.0
+        if len(legal_action) > 8:
+            if legal_action[8] == 1 and max_collision_risk > 0.5:  # 闪现可用且高风险
+                skill_potential_reward = 0.05  # 小奖励，鼓励考虑使用闪现
+            if legal_action[9] == 1 and cur_min_dist_norm < 0.4:  # 天赋可用且怪物较近
+                skill_potential_reward += 0.03  # 小奖励，鼓励考虑使用天赋
+        
         # Update last position / 更新上一帧位置
         self.last_hero_pos = (hero_pos["x"], hero_pos["z"])
 
@@ -346,7 +395,9 @@ class Preprocessor:
             treasure_proximity_reward +
             buff_reward +
             buff_proximity_reward +
-            movement_reward
+            movement_reward +
+            skill_reward +
+            skill_potential_reward
         )
         
         reward = [total_reward]
