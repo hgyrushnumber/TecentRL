@@ -45,12 +45,19 @@ class Preprocessor:
         # 存储历史信息用于轨迹预测
         self.monster_history = []  # 存储过去几步的怪物信息
         self.history_length = 5  # 保留5步历史
+        # 记录上一帧的位置，用于计算移动距离
+        self.last_hero_pos = None
+        self.last_treasure_count = 0
+        self.last_buff_active = False
 
     def reset(self):
         self.step_no = 0
         self.max_step = 200
         self.last_min_monster_dist_norm = 0.5
         self.monster_history = []
+        self.last_hero_pos = None
+        self.last_treasure_count = 0
+        self.last_buff_active = False
 
     def feature_process(self, env_obs, last_action):
         """Process env_obs into feature vector, legal_action mask, and reward.
@@ -143,6 +150,55 @@ class Preprocessor:
         # Update monster history for next step
         self._update_monster_history(current_monster_info)
 
+        # Treasure features (宝箱特征) - 尝试从frame_state获取宝箱信息
+        treasure_feat = np.zeros(4, dtype=np.float32)  # [最近宝箱x, z, 距离, 宝箱数量]
+        try:
+            treasures = frame_state.get("treasures", [])
+            if treasures and len(treasures) > 0:
+                # 找到最近的宝箱
+                min_treasure_dist = float('inf')
+                nearest_treasure = None
+                for treasure in treasures:
+                    if isinstance(treasure, dict) and 'pos' in treasure:
+                        t_pos = treasure['pos']
+                        t_dist = np.sqrt((hero_pos["x"] - t_pos["x"]) ** 2 + (hero_pos["z"] - t_pos["z"]) ** 2)
+                        if t_dist < min_treasure_dist:
+                            min_treasure_dist = t_dist
+                            nearest_treasure = treasure
+                
+                if nearest_treasure:
+                    t_pos = nearest_treasure['pos']
+                    treasure_feat[0] = _norm(t_pos["x"], MAP_SIZE)
+                    treasure_feat[1] = _norm(t_pos["z"], MAP_SIZE)
+                    treasure_feat[2] = _norm(min_treasure_dist, MAP_SIZE * 1.41)
+                    treasure_feat[3] = _norm(len(treasures), 10.0)  # 宝箱数量归一化
+        except Exception:
+            pass  # 如果获取失败，使用默认值
+
+        # Buff features (Buff特征) - 尝试从frame_state获取buff信息
+        buff_feat = np.zeros(3, dtype=np.float32)  # [最近buff x, z, 距离]
+        try:
+            buffs = frame_state.get("buffs", [])
+            if buffs and len(buffs) > 0:
+                # 找到最近的buff
+                min_buff_dist = float('inf')
+                nearest_buff = None
+                for buff in buffs:
+                    if isinstance(buff, dict) and 'pos' in buff:
+                        b_pos = buff['pos']
+                        b_dist = np.sqrt((hero_pos["x"] - b_pos["x"]) ** 2 + (hero_pos["z"] - b_pos["z"]) ** 2)
+                        if b_dist < min_buff_dist:
+                            min_buff_dist = b_dist
+                            nearest_buff = buff
+                
+                if nearest_buff:
+                    b_pos = nearest_buff['pos']
+                    buff_feat[0] = _norm(b_pos["x"], MAP_SIZE)
+                    buff_feat[1] = _norm(b_pos["z"], MAP_SIZE)
+                    buff_feat[2] = _norm(min_buff_dist, MAP_SIZE * 1.41)
+        except Exception:
+            pass  # 如果获取失败，使用默认值
+
         # Local map features (16D) / 局部地图特征
         map_feat = np.zeros(16, dtype=np.float32)
         if map_info is not None and len(map_info) >= 13:
@@ -185,6 +241,8 @@ class Preprocessor:
                 hero_feat,
                 monster_feats[0],
                 monster_feats[1],
+                treasure_feat,  # 添加宝箱特征
+                buff_feat,      # 添加buff特征
                 map_feat,
                 np.array(legal_action, dtype=np.float32),
                 progress_feat,
@@ -202,7 +260,7 @@ class Preprocessor:
         # Base survival reward / 基础生存奖励
         survive_reward = 0.01
         
-        # Distance shaping reward / 距离塑形奖励
+        # Distance shaping reward (怪物距离) / 距离塑形奖励
         dist_shaping = 0.1 * (cur_min_dist_norm - self.last_min_monster_dist_norm)
         
         # Collision risk penalty / 碰撞风险惩罚
@@ -227,6 +285,52 @@ class Preprocessor:
             
         # Time pressure bonus / 时间压力奖励
         time_bonus = 0.005 * step_norm  # 随时间增加的生存奖励
+        
+        # Treasure collection reward / 收集宝箱奖励
+        treasure_reward = 0.0
+        try:
+            current_treasure_count = int(treasure_feat[3] * 10)  # 反归一化宝箱数量
+            if current_treasure_count < self.last_treasure_count:
+                treasure_reward = 2.0  # 收集到宝箱的奖励
+                self.last_treasure_count = current_treasure_count
+        except Exception:
+            pass
+        
+        # Treasure proximity reward / 接近宝箱奖励
+        treasure_proximity_reward = 0.0
+        if treasure_feat[2] > 0 and treasure_feat[2] < 0.3:  # 距离较近时
+            treasure_proximity_reward = 0.1 * (1.0 - treasure_feat[2])  # 鼓励靠近宝箱
+        
+        # Buff collection reward / 获取buff奖励
+        buff_reward = 0.0
+        try:
+            # 检测是否获取了buff（buff_remaining_time变化）
+            current_buff_active = buff_remain_norm > 0.01
+            if current_buff_active and not self.last_buff_active:
+                buff_reward = 1.0  # 获取buff的奖励
+            self.last_buff_active = current_buff_active
+        except Exception:
+            pass
+        
+        # Buff proximity reward / 接近buff奖励
+        buff_proximity_reward = 0.0
+        if buff_feat[2] > 0 and buff_feat[2] < 0.3:  # 距离较近时
+            buff_proximity_reward = 0.05 * (1.0 - buff_feat[2])  # 鼓励靠近buff
+        
+        # Movement reward / 移动距离奖励（鼓励探索）
+        movement_reward = 0.0
+        if self.last_hero_pos is not None:
+            try:
+                last_x, last_z = self.last_hero_pos
+                move_dist = np.sqrt((hero_pos["x"] - last_x) ** 2 + (hero_pos["z"] - last_z) ** 2)
+                # 归一化移动距离（假设每步最多移动1格）
+                move_dist_norm = _norm(move_dist, 2.0)
+                movement_reward = 0.02 * move_dist_norm  # 移动奖励
+            except Exception:
+                pass
+        
+        # Update last position / 更新上一帧位置
+        self.last_hero_pos = (hero_pos["x"], hero_pos["z"])
 
         self.last_min_monster_dist_norm = cur_min_dist_norm
 
@@ -237,7 +341,12 @@ class Preprocessor:
             risk_penalty + 
             milestone_reward + 
             avoidance_reward + 
-            time_bonus
+            time_bonus +
+            treasure_reward +
+            treasure_proximity_reward +
+            buff_reward +
+            buff_proximity_reward +
+            movement_reward
         )
         
         reward = [total_reward]
