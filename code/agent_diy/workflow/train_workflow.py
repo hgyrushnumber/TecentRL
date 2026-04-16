@@ -126,6 +126,7 @@ class EpisodeRunner:
                 if done:
                     env_info = env_obs["observation"]["env_info"]
                     total_score = env_info.get("total_score", 0)
+                    treasure_count = env_info.get("treasure_count", 0)
 
                     if terminated:
                         final_reward[0] = -10.0
@@ -137,6 +138,7 @@ class EpisodeRunner:
                     self.logger.info(
                         f"[GAMEOVER] episode:{self.episode_cnt} steps:{step} "
                         f"result:{result_str} sim_score:{total_score:.1f} "
+                        f"treasure:{treasure_count} "
                         f"total_reward:{total_reward:.3f}"
                     )
 
@@ -167,6 +169,8 @@ class EpisodeRunner:
                             "reward": round(total_reward + float(final_reward[0]), 4),
                             "episode_steps": step,
                             "episode_cnt": self.episode_cnt,
+                            "finish_step": step,
+                            "treasure": treasure_count,
                         }
                         self.monitor.put_data({os.getpid(): monitor_data})
                         self.last_report_monitor_time = now

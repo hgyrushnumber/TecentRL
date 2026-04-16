@@ -56,7 +56,7 @@ class Preprocessor:
         self.last_min_monster_dist_norm = 0.5
         self.monster_history = []
         self.last_hero_pos = None
-        self.last_treasure_count = 0
+        self.last_treasure_count = -1   # -1 表示未初始化（第一帧不触发奖励）
         self.last_buff_active = False
 
     def feature_process(self, env_obs, last_action):
@@ -298,13 +298,16 @@ class Preprocessor:
         # 游戏后期难度增加，相应提高奖励权重
         
         # Base survival reward with dynamic scaling / 基础生存奖励（动态缩放）
-        survive_reward = 0.01 * (1.0 + progress_ratio * 0.5)  # 后期生存奖励更高
-        
+        # 后期生存奖励更高，给模型足够的正向激励坚持存活
+        survive_reward = 0.02 * (1.0 + progress_ratio * 1.0)  # 提高基础存活奖励
+
         # Distance shaping reward (怪物距离) / 距离塑形奖励
-        dist_shaping = 0.1 * (cur_min_dist_norm - self.last_min_monster_dist_norm) * (1.0 + progress_ratio)
-        
-        # Collision risk penalty with dynamic scaling / 碰撞风险惩罚（动态缩放）
-        risk_penalty = -0.05 * max_collision_risk * (1.0 + progress_ratio * 2.0)  # 后期惩罚更重
+        # 只奖励远离怪物（正向），不惩罚靠近（避免模型绕开宝箱路径）
+        dist_delta = cur_min_dist_norm - self.last_min_monster_dist_norm
+        dist_shaping = 0.1 * max(dist_delta, 0.0) * (1.0 + progress_ratio)  # 仅正向奖励
+
+        # Collision risk penalty - 固定权重，不随时间放大（避免后期惩罚主导）
+        risk_penalty = -0.03 * max_collision_risk  # 固定惩罚，不动态放大
         
         # Milestone rewards / 阶段性里程碑奖励（扩展到整个游戏时长）
         milestone_reward = 0.0
@@ -343,9 +346,15 @@ class Preprocessor:
         # Treasure collection reward / 收集宝箱奖励
         treasure_reward = 0.0
         try:
-            current_treasure_count = int(treasure_feat[3] * 10)  # 反归一化宝箱数量
-            if current_treasure_count < self.last_treasure_count:
-                treasure_reward = 2.0  # 收集到宝箱的奖励
+            # 反归一化获取当前宝箱数量（env中宝箱被收集后从列表消失，数量减少）
+            current_treasure_count = int(round(treasure_feat[3] * 10))
+            if self.last_treasure_count == -1:
+                # 第一帧：仅初始化，不触发奖励
+                self.last_treasure_count = current_treasure_count
+            elif current_treasure_count < self.last_treasure_count:
+                # 宝箱数量减少 = 英雄收集了宝箱
+                collected = self.last_treasure_count - current_treasure_count
+                treasure_reward = 2.0 * collected   # 每个宝箱奖励2.0
                 self.last_treasure_count = current_treasure_count
         except Exception:
             pass
