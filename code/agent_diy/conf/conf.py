@@ -40,8 +40,8 @@ class Config:
     # PPO hyperparameters / PPO 超参数
     GAMMA = 0.99
     LAMDA = 0.95
-    INIT_LEARNING_RATE_START = 0.0003
-    BETA_START = 0.001
+    INIT_LEARNING_RATE_START = 0.001   # 提高初始LR（原0.0003），加快早期收敛
+    BETA_START = 0.01                  # 提高初始熵系数（原0.001），鼓励早期充分探索
     CLIP_PARAM = 0.2
-    VF_COEF = 1.0
+    VF_COEF = 0.5                      # 降低value loss权重（原1.0），避免值函数主导梯度
     GRAD_CLIP_RANGE = 0.5

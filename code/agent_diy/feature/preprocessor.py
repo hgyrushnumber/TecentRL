@@ -16,47 +16,37 @@ import numpy as np
 MAP_SIZE = 128.0
 # Max monster speed / 最大怪物速度
 MAX_MONSTER_SPEED = 5.0
-# Max distance bucket / 距离桶最大值
-MAX_DIST_BUCKET = 5.0
 # Max flash cooldown / 最大闪现冷却步数
 MAX_FLASH_CD = 2000.0
 # Max buff duration / buff最大持续时间
 MAX_BUFF_DURATION = 50.0
-# Max acceleration / 最大加速度
-MAX_ACCELERATION = 2.0
-# Max relative velocity / 最大相对速度
+# Max relative velocity / 最大相对速度（每步像素）
 MAX_REL_VELOCITY = 10.0
-# Max collision risk / 最大碰撞风险
+# Max collision risk / 最大碰撞风险（speed/dist）
 MAX_COLLISION_RISK = 10.0
+# Max distance on map diagonal
+MAX_DIST = MAP_SIZE * 1.41
 
 
 def _norm(v, v_max, v_min=0.0):
-    """Normalize value to [0, 1].
-
-    将值归一化到 [0, 1]。
-    """
+    """Normalize value to [0, 1]. / 归一化到 [0, 1]。"""
     v = float(np.clip(v, v_min, v_max))
     return (v - v_min) / (v_max - v_min) if (v_max - v_min) > 1e-6 else 0.0
 
 
 class Preprocessor:
     def __init__(self):
+        self.history_length = 3   # 保留3步历史（减少内存占用）
         self.reset()
-        # 存储历史信息用于轨迹预测
-        self.monster_history = []  # 存储过去几步的怪物信息
-        self.history_length = 5  # 保留5步历史
-        # 记录上一帧的位置，用于计算移动距离
-        self.last_hero_pos = None
-        self.last_treasure_count = 0
-        self.last_buff_active = False
 
     def reset(self):
         self.step_no = 0
-        self.max_step = 200
+        self.max_step = 1000
         self.last_min_monster_dist_norm = 0.5
-        self.monster_history = []
+        # 怪物历史位置（用于相对速度计算）：list of [pos_x, pos_z] or None
+        self.monster_prev_pos = [None, None]
         self.last_hero_pos = None
-        self.last_treasure_count = -1   # -1 表示未初始化（第一帧不触发奖励）
+        self.last_treasure_count = -1   # -1 表示未初始化
         self.last_buff_active = False
 
     def feature_process(self, env_obs, last_action):
@@ -71,151 +61,121 @@ class Preprocessor:
         legal_act_raw = observation["legal_action"]
 
         self.step_no = observation["step_no"]
-        self.max_step = env_info.get("max_step", 200)
+        self.max_step = env_info.get("max_step", 1000)
 
-        # Hero self features (4D) / 英雄自身特征
+        # ── 英雄特征 (6D) ────────────────────────────────────────────────
         hero = frame_state["heroes"]
         hero_pos = hero["pos"]
-        hero_x_norm = _norm(hero_pos["x"], MAP_SIZE)
-        hero_z_norm = _norm(hero_pos["z"], MAP_SIZE)
-        flash_cd_norm = _norm(hero["flash_cooldown"], MAX_FLASH_CD)
-        buff_remain_norm = _norm(hero["buff_remaining_time"], MAX_BUFF_DURATION)
-        
-        # Skill ready features / 技能可用特征
-        flash_ready = 1.0 if hero.get("flash_cooldown", 0) == 0 else 0.0
-        try:
-            talent_cooldown = hero.get("talent_cooldown", 0)
-            talent_ready = 1.0 if talent_cooldown == 0 else 0.0
-        except Exception:
-            talent_ready = 1.0  # 默认可用
+        hx = hero_pos["x"]
+        hz = hero_pos["z"]
+        flash_cd = hero.get("flash_cooldown", 0)
+        talent_cd = hero.get("talent_cooldown", 0)
 
-        # Hero features (6D) / 英雄自身特征（扩展到6维）
         hero_feat = np.array([
-            hero_x_norm, 
-            hero_z_norm, 
-            flash_cd_norm, 
-            buff_remain_norm,
-            flash_ready,    # 新增：闪现是否可用
-            talent_ready    # 新增：天赋是否可用
+            _norm(hx, MAP_SIZE),
+            _norm(hz, MAP_SIZE),
+            _norm(flash_cd, MAX_FLASH_CD),
+            _norm(hero.get("buff_remaining_time", 0), MAX_BUFF_DURATION),
+            1.0 if flash_cd == 0 else 0.0,    # 闪现可用
+            1.0 if talent_cd == 0 else 0.0,   # 天赋可用
         ], dtype=np.float32)
 
-        # Monster features with advanced features (10D x 2) / 怪物特征（含高级特征）
+        buff_remain_norm = hero_feat[3]
+
+        # ── 怪物特征 (9D × 2) ────────────────────────────────────────────
         monsters = frame_state.get("monsters", [])
         monster_feats = []
-        current_monster_info = []
-        
+        cur_min_dist_norm = 1.0
+        max_collision_risk_norm = 0.0
+
         for i in range(2):
-            if i < len(monsters):
+            if i < len(monsters) and monsters[i].get("is_in_view", 0):
                 m = monsters[i]
-                is_in_view = float(m.get("is_in_view", 0))
-                m_pos = m["pos"]
-                if is_in_view:
-                    m_x_norm = _norm(m_pos["x"], MAP_SIZE)
-                    m_z_norm = _norm(m_pos["z"], MAP_SIZE)
-                    m_speed_norm = _norm(m.get("speed", 1), MAX_MONSTER_SPEED)
+                mx = m["pos"]["x"]
+                mz = m["pos"]["z"]
+                spd = m.get("speed", 1)
 
-                    # Euclidean distance / 欧式距离
-                    raw_dist = np.sqrt((hero_pos["x"] - m_pos["x"]) ** 2 + (hero_pos["z"] - m_pos["z"]) ** 2)
-                    dist_norm = _norm(raw_dist, MAP_SIZE * 1.41)
-                    
-                    # Store for trajectory prediction
-                    current_monster_info.append({
-                        'pos': m_pos,
-                        'speed': m.get("speed", 1),
-                        'dist': raw_dist
-                    })
+                raw_dist = np.sqrt((hx - mx) ** 2 + (hz - mz) ** 2)
+                dist_norm = _norm(raw_dist, MAX_DIST)
+                cur_min_dist_norm = min(cur_min_dist_norm, dist_norm)
+
+                # 相对速度（与上一帧位置差）
+                if self.monster_prev_pos[i] is not None:
+                    pvx, pvz = self.monster_prev_pos[i]
+                    vel_x = mx - pvx
+                    vel_z = mz - pvz
                 else:
-                    m_x_norm = 0.0
-                    m_z_norm = 0.0
-                    m_speed_norm = 0.0
-                    dist_norm = 1.0
-                    current_monster_info.append(None)
-                
-                # Advanced features for visible monsters
-                if is_in_view > 0:
-                    # Relative velocity features (2D)
-                    rel_vel_x, rel_vel_z = self._calculate_relative_velocity(i, m_pos)
-                    rel_vel_x_norm = _norm(rel_vel_x, MAX_REL_VELOCITY)
-                    rel_vel_z_norm = _norm(rel_vel_z, MAX_REL_VELOCITY)
-                    
-                    # Trajectory prediction features (2D)
-                    pred_x, pred_z = self._predict_monster_trajectory(i, m_pos)
-                    pred_dist = np.sqrt((hero_pos["x"] - pred_x) ** 2 + (hero_pos["z"] - pred_z) ** 2)
-                    pred_dist_norm = _norm(pred_dist, MAP_SIZE * 1.41)
-                    
-                    # Collision risk feature (1D)
-                    collision_risk = self._calculate_collision_risk(
-                        hero_pos, m_pos, m.get("speed", 1), raw_dist
-                    )
-                    collision_risk_norm = _norm(collision_risk, MAX_COLLISION_RISK)
-                    
-                    monster_feats.append(
-                        np.array([
-                            is_in_view, m_x_norm, m_z_norm, m_speed_norm, dist_norm,
-                            rel_vel_x_norm, rel_vel_z_norm, pred_dist_norm, collision_risk_norm
-                        ], dtype=np.float32)
-                    )
-                else:
-                    monster_feats.append(
-                        np.array([0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float32)
-                    )
+                    vel_x = vel_z = 0.0
+                self.monster_prev_pos[i] = (mx, mz)
+
+                # 线性预测3步后距离
+                pred_x = np.clip(mx + vel_x * 3, 0, MAP_SIZE)
+                pred_z = np.clip(mz + vel_z * 3, 0, MAP_SIZE)
+                pred_dist_norm = _norm(
+                    np.sqrt((hx - pred_x) ** 2 + (hz - pred_z) ** 2), MAX_DIST
+                )
+
+                # 碰撞风险 = speed / distance
+                cr_norm = _norm(spd / max(raw_dist, 1.0), MAX_COLLISION_RISK)
+                max_collision_risk_norm = max(max_collision_risk_norm, cr_norm)
+
+                monster_feats.append(np.array([
+                    1.0,
+                    _norm(mx, MAP_SIZE),
+                    _norm(mz, MAP_SIZE),
+                    _norm(spd, MAX_MONSTER_SPEED),
+                    dist_norm,
+                    _norm(vel_x, MAX_REL_VELOCITY),
+                    _norm(vel_z, MAX_REL_VELOCITY),
+                    pred_dist_norm,
+                    cr_norm,
+                ], dtype=np.float32))
             else:
-                monster_feats.append(np.zeros(9, dtype=np.float32))
-                current_monster_info.append(None)
-        
-        # Update monster history for next step
-        self._update_monster_history(current_monster_info)
+                self.monster_prev_pos[i] = None
+                monster_feats.append(np.array([0., 0., 0., 0., 1., 0., 0., 1., 0.], dtype=np.float32))
 
-        # Treasure features (宝箱特征) - 尝试从frame_state获取宝箱信息
-        treasure_feat = np.zeros(4, dtype=np.float32)  # [最近宝箱x, z, 距离, 宝箱数量]
+        # ── 宝箱特征 (4D) ────────────────────────────────────────────────
+        treasure_feat = np.zeros(4, dtype=np.float32)
         try:
             treasures = frame_state.get("treasures", [])
-            if treasures and len(treasures) > 0:
-                # 找到最近的宝箱
-                min_treasure_dist = float('inf')
-                nearest_treasure = None
-                for treasure in treasures:
-                    if isinstance(treasure, dict) and 'pos' in treasure:
-                        t_pos = treasure['pos']
-                        t_dist = np.sqrt((hero_pos["x"] - t_pos["x"]) ** 2 + (hero_pos["z"] - t_pos["z"]) ** 2)
-                        if t_dist < min_treasure_dist:
-                            min_treasure_dist = t_dist
-                            nearest_treasure = treasure
-                
-                if nearest_treasure:
-                    t_pos = nearest_treasure['pos']
-                    treasure_feat[0] = _norm(t_pos["x"], MAP_SIZE)
-                    treasure_feat[1] = _norm(t_pos["z"], MAP_SIZE)
-                    treasure_feat[2] = _norm(min_treasure_dist, MAP_SIZE * 1.41)
-                    treasure_feat[3] = _norm(len(treasures), 10.0)  # 宝箱数量归一化
+            if treasures:
+                min_td = float("inf")
+                tx, tz = 0.0, 0.0
+                for t in treasures:
+                    if isinstance(t, dict) and "pos" in t:
+                        tp = t["pos"]
+                        td = np.sqrt((hx - tp["x"]) ** 2 + (hz - tp["z"]) ** 2)
+                        if td < min_td:
+                            min_td, tx, tz = td, tp["x"], tp["z"]
+                if min_td < float("inf"):
+                    treasure_feat[0] = _norm(tx, MAP_SIZE)
+                    treasure_feat[1] = _norm(tz, MAP_SIZE)
+                    treasure_feat[2] = _norm(min_td, MAX_DIST)
+                    treasure_feat[3] = _norm(len(treasures), 10.0)
         except Exception:
-            pass  # 如果获取失败，使用默认值
+            pass
 
-        # Buff features (Buff特征) - 尝试从frame_state获取buff信息
-        buff_feat = np.zeros(3, dtype=np.float32)  # [最近buff x, z, 距离]
+        # ── Buff特征 (3D) ────────────────────────────────────────────────
+        buff_feat = np.zeros(3, dtype=np.float32)
         try:
             buffs = frame_state.get("buffs", [])
-            if buffs and len(buffs) > 0:
-                # 找到最近的buff
-                min_buff_dist = float('inf')
-                nearest_buff = None
-                for buff in buffs:
-                    if isinstance(buff, dict) and 'pos' in buff:
-                        b_pos = buff['pos']
-                        b_dist = np.sqrt((hero_pos["x"] - b_pos["x"]) ** 2 + (hero_pos["z"] - b_pos["z"]) ** 2)
-                        if b_dist < min_buff_dist:
-                            min_buff_dist = b_dist
-                            nearest_buff = buff
-                
-                if nearest_buff:
-                    b_pos = nearest_buff['pos']
-                    buff_feat[0] = _norm(b_pos["x"], MAP_SIZE)
-                    buff_feat[1] = _norm(b_pos["z"], MAP_SIZE)
-                    buff_feat[2] = _norm(min_buff_dist, MAP_SIZE * 1.41)
+            if buffs:
+                min_bd = float("inf")
+                bx, bz = 0.0, 0.0
+                for b in buffs:
+                    if isinstance(b, dict) and "pos" in b:
+                        bp = b["pos"]
+                        bd = np.sqrt((hx - bp["x"]) ** 2 + (hz - bp["z"]) ** 2)
+                        if bd < min_bd:
+                            min_bd, bx, bz = bd, bp["x"], bp["z"]
+                if min_bd < float("inf"):
+                    buff_feat[0] = _norm(bx, MAP_SIZE)
+                    buff_feat[1] = _norm(bz, MAP_SIZE)
+                    buff_feat[2] = _norm(min_bd, MAX_DIST)
         except Exception:
-            pass  # 如果获取失败，使用默认值
+            pass
 
-        # Local map features (16D) / 局部地图特征
+        # ── 局部地图特征 (16D) ───────────────────────────────────────────
         map_feat = np.zeros(16, dtype=np.float32)
         if map_info is not None and len(map_info) >= 13:
             center = len(map_info) // 2
@@ -226,13 +186,8 @@ class Preprocessor:
                         map_feat[flat_idx] = float(map_info[row][col] != 0)
                     flat_idx += 1
 
-        # Legal action mask (10D) / 合法动作掩码（包含技能）
-        # [0-7]: 移动方向
-        # [8]: 闪现技能（根据冷却时间判断是否可用）
-        # [9]: 天赋技能（根据冷却时间判断是否可用）
-        legal_action = [1] * 8  # 移动动作默认都合法
-        
-        # 处理移动动作的合法掩码
+        # ── 合法动作掩码 (10D) ───────────────────────────────────────────
+        legal_action = [1] * 8
         if isinstance(legal_act_raw, list) and legal_act_raw:
             if isinstance(legal_act_raw[0], bool):
                 for j in range(min(8, len(legal_act_raw))):
@@ -240,296 +195,123 @@ class Preprocessor:
             else:
                 valid_set = {int(a) for a in legal_act_raw if int(a) < 8}
                 legal_action = [1 if j in valid_set else 0 for j in range(8)]
-
         if sum(legal_action) == 0:
             legal_action = [1] * 8
-        
-        # 添加技能动作的合法性判断
-        # 闪现技能：冷却时间为0时可用
-        flash_ready = (hero.get("flash_cooldown", 0) == 0)
-        legal_action.append(1 if flash_ready else 0)
-        
-        # 天赋技能：尝试从环境获取冷却时间，默认为可用
-        try:
-            talent_cooldown = hero.get("talent_cooldown", 0)
-            talent_ready = (talent_cooldown == 0)
-        except Exception:
-            talent_ready = True  # 如果无法获取，默认可用
-        legal_action.append(1 if talent_ready else 0)
+        legal_action.append(1 if flash_cd == 0 else 0)   # [8] 闪现
+        legal_action.append(1 if talent_cd == 0 else 0)  # [9] 天赋
 
-        # Progress features (4D) / 进度特征（增加了高级特征）
+        # ── 进度特征 (4D) ────────────────────────────────────────────────
+        # 4 个独立信息：归一化步数 / 距离最近怪物 / 碰撞风险 / 后半段标志
         step_norm = _norm(self.step_no, self.max_step)
-        survival_ratio = step_norm
-        
-        # Time-based features / 时间相关特征
-        time_pressure = _norm(self.step_no / max(self.max_step, 1), 1.0)  # 时间压力
-        survival_advantage = _norm(self.step_no - self.max_step * 0.5, self.max_step)  # 生存优势
-        
         progress_feat = np.array([
-            step_norm, survival_ratio, time_pressure, survival_advantage
+            step_norm,
+            cur_min_dist_norm,                        # 当前最近怪物距离
+            max_collision_risk_norm,                  # 当前最大碰撞风险
+            1.0 if self.step_no > self.max_step * 0.5 else 0.0,  # 后半段标志
         ], dtype=np.float32)
 
-        # Concatenate features / 拼接特征
-        feature = np.concatenate(
-            [
-                hero_feat,
-                monster_feats[0],
-                monster_feats[1],
-                treasure_feat,  # 添加宝箱特征
-                buff_feat,      # 添加buff特征
-                map_feat,
-                np.array(legal_action, dtype=np.float32),
-                progress_feat,
-            ]
-        )
+        # ── 拼接特征 (61D) ───────────────────────────────────────────────
+        feature = np.concatenate([
+            hero_feat,           # 6
+            monster_feats[0],    # 9
+            monster_feats[1],    # 9
+            treasure_feat,       # 4
+            buff_feat,           # 3
+            map_feat,            # 16
+            np.array(legal_action, dtype=np.float32),  # 10
+            progress_feat,       # 4
+        ])  # total = 61
 
-        # Advanced reward design / 高级奖励设计
-        cur_min_dist_norm = 1.0
-        max_collision_risk = 0.0
-        for m_feat in monster_feats:
-            if m_feat[0] > 0:
-                cur_min_dist_norm = min(cur_min_dist_norm, m_feat[4])
-                max_collision_risk = max(max_collision_risk, m_feat[8])  # 使用碰撞风险特征
-
-        # Calculate progress ratio / 计算游戏进度比例
+        # ── 奖励计算 ─────────────────────────────────────────────────────
         progress_ratio = self.step_no / max(self.max_step, 1)
-        
-        # Dynamic reward weights based on game progress / 基于游戏进度的动态奖励权重
-        # 游戏后期难度增加，相应提高奖励权重
-        
-        # Base survival reward with dynamic scaling / 基础生存奖励（动态缩放）
-        # 后期生存奖励更高，给模型足够的正向激励坚持存活
-        survive_reward = 0.02 * (1.0 + progress_ratio * 1.0)  # 提高基础存活奖励
 
-        # Distance shaping reward (怪物距离) / 距离塑形奖励
-        # 只奖励远离怪物（正向），不惩罚靠近（避免模型绕开宝箱路径）
+        # 1. 基础存活奖励（动态）
+        survive_reward = 0.02 * (1.0 + progress_ratio)
+
+        # 2. 远离怪物奖励（单向，不惩罚靠近）
         dist_delta = cur_min_dist_norm - self.last_min_monster_dist_norm
-        dist_shaping = 0.1 * max(dist_delta, 0.0) * (1.0 + progress_ratio)  # 仅正向奖励
+        dist_shaping = 0.1 * max(dist_delta, 0.0) * (1.0 + progress_ratio)
 
-        # Collision risk penalty - 固定权重，不随时间放大（避免后期惩罚主导）
-        risk_penalty = -0.03 * max_collision_risk  # 固定惩罚，不动态放大
-        
-        # Milestone rewards / 阶段性里程碑奖励（扩展到整个游戏时长）
-        milestone_reward = 0.0
-        if self.step_no == 50:
-            milestone_reward = 0.5   # 存活50步奖励
-        elif self.step_no == 100:
-            milestone_reward = 1.0   # 存活100步奖励
-        elif self.step_no == 150:
-            milestone_reward = 2.0   # 存活150步奖励
-        elif self.step_no == 200:
-            milestone_reward = 3.0   # 存活200步奖励
-        elif self.step_no == 300:
-            milestone_reward = 4.0   # 存活300步奖励（第二个怪物出现）
-        elif self.step_no == 400:
-            milestone_reward = 5.0   # 存活400步奖励
-        elif self.step_no == 500:
-            milestone_reward = 6.0   # 存活500步奖励（怪物加速）
-        elif self.step_no == 600:
-            milestone_reward = 7.0   # 存活600步奖励
-        elif self.step_no == 750:
-            milestone_reward = 8.0   # 存活750步奖励
-        elif self.step_no == 900:
-            milestone_reward = 9.0   # 存活900步奖励
-        elif self.step_no == 1000:
-            milestone_reward = 10.0  # 存活1000步奖励（通关）
-            
-        # Emergency avoidance reward / 紧急避险奖励
+        # 3. 碰撞风险惩罚（固定权重）
+        risk_penalty = -0.03 * max_collision_risk_norm
+
+        # 4. 里程碑奖励
+        _milestones = {50: 0.5, 100: 1.0, 150: 2.0, 200: 3.0,
+                       300: 4.0, 400: 5.0, 500: 6.0, 600: 7.0,
+                       750: 8.0, 900: 9.0, 1000: 10.0}
+        milestone_reward = _milestones.get(self.step_no, 0.0)
+
+        # 5. 紧急避险奖励
         avoidance_reward = 0.0
-        if (self.last_min_monster_dist_norm < 0.3 and 
-            cur_min_dist_norm > self.last_min_monster_dist_norm + 0.1):
-            avoidance_reward = 0.2  # 成功远离危险区域奖励
-            
-        # Time pressure bonus / 时间压力奖励
-        time_bonus = 0.005 * step_norm  # 随时间增加的生存奖励
-        
-        # Treasure collection reward / 收集宝箱奖励
+        if (self.last_min_monster_dist_norm < 0.3 and
+                cur_min_dist_norm > self.last_min_monster_dist_norm + 0.05):
+            avoidance_reward = 0.3
+
+        # 6. 宝箱收集奖励
         treasure_reward = 0.0
         try:
-            # 反归一化获取当前宝箱数量（env中宝箱被收集后从列表消失，数量减少）
-            current_treasure_count = int(round(treasure_feat[3] * 10))
+            cur_tc = int(round(treasure_feat[3] * 10))
             if self.last_treasure_count == -1:
-                # 第一帧：仅初始化，不触发奖励
-                self.last_treasure_count = current_treasure_count
-            elif current_treasure_count < self.last_treasure_count:
-                # 宝箱数量减少 = 英雄收集了宝箱
-                collected = self.last_treasure_count - current_treasure_count
-                treasure_reward = 2.0 * collected   # 每个宝箱奖励2.0
-                self.last_treasure_count = current_treasure_count
+                self.last_treasure_count = cur_tc
+            elif cur_tc < self.last_treasure_count:
+                treasure_reward = 2.0 * (self.last_treasure_count - cur_tc)
+                self.last_treasure_count = cur_tc
         except Exception:
             pass
-        
-        # Treasure proximity reward / 接近宝箱奖励
+
+        # 7. 接近宝箱奖励
         treasure_proximity_reward = 0.0
-        if treasure_feat[2] > 0 and treasure_feat[2] < 0.3:  # 距离较近时
-            treasure_proximity_reward = 0.1 * (1.0 - treasure_feat[2])  # 鼓励靠近宝箱
-        
-        # Buff collection reward / 获取buff奖励
+        if 0.0 < treasure_feat[2] < 0.3:
+            treasure_proximity_reward = 0.1 * (1.0 - treasure_feat[2])
+
+        # 8. Buff获取奖励
         buff_reward = 0.0
-        try:
-            # 检测是否获取了buff（buff_remaining_time变化）
-            current_buff_active = buff_remain_norm > 0.01
-            if current_buff_active and not self.last_buff_active:
-                buff_reward = 1.0  # 获取buff的奖励
-            self.last_buff_active = current_buff_active
-        except Exception:
-            pass
-        
-        # Buff proximity reward / 接近buff奖励
+        cur_buff_active = buff_remain_norm > 0.01
+        if cur_buff_active and not self.last_buff_active:
+            buff_reward = 1.0
+        self.last_buff_active = cur_buff_active
+
+        # 9. 接近Buff奖励
         buff_proximity_reward = 0.0
-        if buff_feat[2] > 0 and buff_feat[2] < 0.3:  # 距离较近时
-            buff_proximity_reward = 0.05 * (1.0 - buff_feat[2])  # 鼓励靠近buff
-        
-        # Movement reward / 移动距离奖励（鼓励探索）
+        if 0.0 < buff_feat[2] < 0.3:
+            buff_proximity_reward = 0.05 * (1.0 - buff_feat[2])
+
+        # 10. 移动探索奖励
         movement_reward = 0.0
         if self.last_hero_pos is not None:
-            try:
-                last_x, last_z = self.last_hero_pos
-                move_dist = np.sqrt((hero_pos["x"] - last_x) ** 2 + (hero_pos["z"] - last_z) ** 2)
-                # 归一化移动距离（假设每步最多移动1格）
-                move_dist_norm = _norm(move_dist, 2.0)
-                # 后期移动奖励更高（鼓励在危险环境中保持移动）
-                movement_reward = 0.02 * move_dist_norm * (1.0 + progress_ratio * 0.5)
-            except Exception:
-                pass
-        
-        # Skill usage reward with dynamic scaling / 技能使用奖励（动态缩放）
-        skill_reward = 0.0
-        # 后期技能使用奖励更高（因为危险更大）
-        skill_multiplier = 1.0 + progress_ratio * 1.5
-        
-        # Flash skill reward / 闪现技能奖励
-        # 鼓励在危险时刻使用闪现
-        if last_action == 8:  # 动作8是使用闪现
-            if max_collision_risk > 0.5:  # 高风险时使用闪现
-                skill_reward += 1.0 * skill_multiplier  # 高奖励
-            elif max_collision_risk > 0.3:  # 中等风险时使用闪现
-                skill_reward += 0.5 * skill_multiplier  # 中等奖励
-            else:
-                skill_reward += 0.1 * skill_multiplier  # 低风险时使用闪现，小奖励
-        
-        # Talent skill reward / 天赋技能奖励
-        # 鼓励在合适时机使用天赋技能
-        if last_action == 9:  # 动作9是使用天赋技能
-            # 根据当前情况给予奖励
-            if cur_min_dist_norm < 0.5:  # 怪物较近时使用技能
-                skill_reward += 0.8
-            else:
-                skill_reward += 0.3  # 其他情况使用技能
-        
-        # Potential skill usage incentive / 潜在技能使用激励
-        # 当技能可用且处于危险时，给予小奖励鼓励考虑使用技能
-        skill_potential_reward = 0.0
-        if len(legal_action) > 8:
-            if legal_action[8] == 1 and max_collision_risk > 0.5:  # 闪现可用且高风险
-                skill_potential_reward = 0.05  # 小奖励，鼓励考虑使用闪现
-            if legal_action[9] == 1 and cur_min_dist_norm < 0.4:  # 天赋可用且怪物较近
-                skill_potential_reward += 0.03  # 小奖励，鼓励考虑使用天赋
-        
-        # Update last position / 更新上一帧位置
-        self.last_hero_pos = (hero_pos["x"], hero_pos["z"])
+            lx, lz = self.last_hero_pos
+            move_dist = np.sqrt((hx - lx) ** 2 + (hz - lz) ** 2)
+            movement_reward = 0.02 * _norm(move_dist, 2.0) * (1.0 + progress_ratio * 0.5)
+        self.last_hero_pos = (hx, hz)
 
+        # 11. 技能使用奖励
+        skill_reward = 0.0
+        skill_mult = 1.0 + progress_ratio * 1.5
+        if last_action == 8:  # 闪现
+            if max_collision_risk_norm > 0.5:
+                skill_reward = 1.0 * skill_mult
+            elif max_collision_risk_norm > 0.3:
+                skill_reward = 0.5 * skill_mult
+            else:
+                skill_reward = 0.1 * skill_mult
+        elif last_action == 9:  # 天赋
+            skill_reward = 0.8 if cur_min_dist_norm < 0.5 else 0.3
+
+        # 更新状态
         self.last_min_monster_dist_norm = cur_min_dist_norm
 
-        # Total reward / 总奖励
         total_reward = (
-            survive_reward + 
-            dist_shaping + 
-            risk_penalty + 
-            milestone_reward + 
-            avoidance_reward + 
-            time_bonus +
-            treasure_reward +
-            treasure_proximity_reward +
-            buff_reward +
-            buff_proximity_reward +
-            movement_reward +
-            skill_reward +
-            skill_potential_reward
+            survive_reward
+            + dist_shaping
+            + risk_penalty
+            + milestone_reward
+            + avoidance_reward
+            + treasure_reward
+            + treasure_proximity_reward
+            + buff_reward
+            + buff_proximity_reward
+            + movement_reward
+            + skill_reward
         )
-        
-        reward = [total_reward]
 
-        return feature, legal_action, reward
-
-    def _update_monster_history(self, current_monsters):
-        """Update monster position history for trajectory prediction.
-        
-        更新怪物位置历史用于轨迹预测。
-        """
-        self.monster_history.append(current_monsters)
-        if len(self.monster_history) > self.history_length:
-            self.monster_history.pop(0)
-    
-    def _calculate_relative_velocity(self, monster_idx, current_pos):
-        """Calculate relative velocity between hero and monster.
-        
-        计算英雄与怪物之间的相对速度。
-        """
-        if len(self.monster_history) < 2:
-            return 0.0, 0.0
-        
-        # Get previous position
-        prev_info = self.monster_history[-2]
-        if (prev_info is None or monster_idx >= len(prev_info) or 
-            prev_info[monster_idx] is None):
-            return 0.0, 0.0
-        
-        prev_pos = prev_info[monster_idx]['pos']
-        current_pos_dict = current_pos
-        
-        # Calculate velocity (assuming 1 step time difference)
-        vel_x = current_pos_dict['x'] - prev_pos['x']
-        vel_z = current_pos_dict['z'] - prev_pos['z']
-        
-        return vel_x, vel_z
-    
-    def _predict_monster_trajectory(self, monster_idx, current_pos):
-        """Predict monster future position based on trajectory.
-        
-        基于轨迹预测怪物未来位置。
-        """
-        if len(self.monster_history) < 2:
-            return current_pos['x'], current_pos['z']
-        
-        # Simple linear prediction: current_pos + velocity
-        vel_x, vel_z = self._calculate_relative_velocity(monster_idx, current_pos)
-        
-        # Predict 3 steps ahead
-        pred_x = current_pos['x'] + vel_x * 3
-        pred_z = current_pos['z'] + vel_z * 3
-        
-        # Clamp to map boundaries
-        pred_x = np.clip(pred_x, 0, MAP_SIZE)
-        pred_z = np.clip(pred_z, 0, MAP_SIZE)
-        
-        return pred_x, pred_z
-    
-    def _calculate_collision_risk(self, hero_pos, monster_pos, monster_speed, distance):
-        """Calculate collision risk based on relative positions and velocities.
-        
-        基于相对位置和速度计算碰撞风险。
-        """
-        if distance < 1e-6:
-            return MAX_COLLISION_RISK
-        
-        # Calculate direction vector from hero to monster
-        dx = monster_pos['x'] - hero_pos['x']
-        dz = monster_pos['z'] - hero_pos['z']
-        
-        # Normalize direction
-        dist = np.sqrt(dx*dx + dz*dz)
-        if dist > 0:
-            dx /= dist
-            dz /= dist
-        
-        # Get monster velocity
-        vel_x, vel_z = self._calculate_relative_velocity(0, monster_pos)
-        
-        # Calculate approach velocity (negative means approaching)
-        approach_vel = -(vel_x * dx + vel_z * dz)
-        
-        # Risk increases with speed and decreases with distance
-        risk = (monster_speed + max(0, approach_vel)) / max(distance, 1.0)
-        
-        return risk
+        return feature, legal_action, [total_reward]

@@ -41,14 +41,14 @@ class Algorithm:
         self.clip_param = Config.CLIP_PARAM
 
         # Enhanced training parameters / 增强训练参数
-        self.entropy_start = Config.BETA_START
-        self.entropy_end = 0.0001
-        self.entropy_decay_steps = 30000
-        
-        # Reward normalization / 奖励归一化
-        self.reward_running_mean = 0.0
-        self.reward_running_var = 1.0
-        self.reward_norm_alpha = 0.99
+        # 提高初始熵系数：鼓励早期充分探索，避免策略过早收敛
+        self.entropy_start = 0.01
+        self.entropy_end = 0.001
+        self.entropy_decay_steps = 50000
+
+        # Advantage normalization (per-batch) / 优势函数归一化（批内）
+        # 正确做法：归一化 advantage 而非 reward，稳定策略梯度更新幅度
+        self.advantage_norm = True
         
         self.last_report_monitor_time = 0
         self.train_step = 0
@@ -69,10 +69,12 @@ class Algorithm:
         
         # Update entropy coefficient with scheduling / 更新熵系数（调度）
         self._update_entropy_coefficient()
-        
-        # Normalize rewards if enabled / 奖励归一化
-        reward = self._normalize_rewards(reward)
-        reward_sum = self._normalize_rewards(reward_sum)
+
+        # Normalize advantage per batch / 批内优势函数归一化（稳定策略梯度）
+        if self.advantage_norm:
+            adv_mean = advantage.mean()
+            adv_std = advantage.std().clamp(min=1e-8)
+            advantage = (advantage - adv_mean) / adv_std
 
         self.model.set_train_mode()
         self.optimizer.zero_grad()
@@ -167,40 +169,15 @@ class Algorithm:
 
     def _update_entropy_coefficient(self):
         """Update entropy coefficient with linear decay scheduling.
-        
+
         使用线性衰减调度更新熵系数。
+        初期高熵（0.01）鼓励充分探索，后期低熵（0.001）策略收敛精细化。
         """
         if self.train_step < self.entropy_decay_steps:
             progress = self.train_step / self.entropy_decay_steps
             self.var_beta = self.entropy_start - (self.entropy_start - self.entropy_end) * progress
         else:
             self.var_beta = self.entropy_end
-    
-    def _normalize_rewards(self, rewards):
-        """Normalize rewards using running statistics.
-        
-        使用运行统计归一化奖励。
-        """
-        # Update running statistics
-        rewards_np = rewards.detach().cpu().numpy()
-        batch_mean = np.mean(rewards_np)
-        batch_var = np.var(rewards_np)
-        
-        self.reward_running_mean = (
-            self.reward_norm_alpha * self.reward_running_mean + 
-            (1 - self.reward_norm_alpha) * batch_mean
-        )
-        self.reward_running_var = (
-            self.reward_norm_alpha * self.reward_running_var + 
-            (1 - self.reward_norm_alpha) * batch_var
-        )
-        
-        # Normalize rewards
-        normalized_rewards = (rewards - self.reward_running_mean) / (
-            np.sqrt(self.reward_running_var) + 1e-8
-        )
-        
-        return normalized_rewards
 
     def _masked_softmax(self, logits, legal_action):
         """Softmax with legal action masking (suppress illegal actions).
