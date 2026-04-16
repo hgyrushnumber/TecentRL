@@ -80,8 +80,24 @@ class Preprocessor:
         hero_z_norm = _norm(hero_pos["z"], MAP_SIZE)
         flash_cd_norm = _norm(hero["flash_cooldown"], MAX_FLASH_CD)
         buff_remain_norm = _norm(hero["buff_remaining_time"], MAX_BUFF_DURATION)
+        
+        # Skill ready features / 技能可用特征
+        flash_ready = 1.0 if hero.get("flash_cooldown", 0) == 0 else 0.0
+        try:
+            talent_cooldown = hero.get("talent_cooldown", 0)
+            talent_ready = 1.0 if talent_cooldown == 0 else 0.0
+        except Exception:
+            talent_ready = 1.0  # 默认可用
 
-        hero_feat = np.array([hero_x_norm, hero_z_norm, flash_cd_norm, buff_remain_norm], dtype=np.float32)
+        # Hero features (6D) / 英雄自身特征（扩展到6维）
+        hero_feat = np.array([
+            hero_x_norm, 
+            hero_z_norm, 
+            flash_cd_norm, 
+            buff_remain_norm,
+            flash_ready,    # 新增：闪现是否可用
+            talent_ready    # 新增：天赋是否可用
+        ], dtype=np.float32)
 
         # Monster features with advanced features (10D x 2) / 怪物特征（含高级特征）
         monsters = frame_state.get("monsters", [])
@@ -275,25 +291,45 @@ class Preprocessor:
                 cur_min_dist_norm = min(cur_min_dist_norm, m_feat[4])
                 max_collision_risk = max(max_collision_risk, m_feat[8])  # 使用碰撞风险特征
 
-        # Base survival reward / 基础生存奖励
-        survive_reward = 0.01
+        # Calculate progress ratio / 计算游戏进度比例
+        progress_ratio = self.step_no / max(self.max_step, 1)
+        
+        # Dynamic reward weights based on game progress / 基于游戏进度的动态奖励权重
+        # 游戏后期难度增加，相应提高奖励权重
+        
+        # Base survival reward with dynamic scaling / 基础生存奖励（动态缩放）
+        survive_reward = 0.01 * (1.0 + progress_ratio * 0.5)  # 后期生存奖励更高
         
         # Distance shaping reward (怪物距离) / 距离塑形奖励
-        dist_shaping = 0.1 * (cur_min_dist_norm - self.last_min_monster_dist_norm)
+        dist_shaping = 0.1 * (cur_min_dist_norm - self.last_min_monster_dist_norm) * (1.0 + progress_ratio)
         
-        # Collision risk penalty / 碰撞风险惩罚
-        risk_penalty = -0.05 * max_collision_risk
+        # Collision risk penalty with dynamic scaling / 碰撞风险惩罚（动态缩放）
+        risk_penalty = -0.05 * max_collision_risk * (1.0 + progress_ratio * 2.0)  # 后期惩罚更重
         
-        # Milestone rewards / 阶段性里程碑奖励
+        # Milestone rewards / 阶段性里程碑奖励（扩展到整个游戏时长）
         milestone_reward = 0.0
         if self.step_no == 50:
-            milestone_reward = 0.5  # 存活50步奖励
+            milestone_reward = 0.5   # 存活50步奖励
         elif self.step_no == 100:
-            milestone_reward = 1.0  # 存活100步奖励
+            milestone_reward = 1.0   # 存活100步奖励
         elif self.step_no == 150:
-            milestone_reward = 2.0  # 存活150步奖励
+            milestone_reward = 2.0   # 存活150步奖励
         elif self.step_no == 200:
-            milestone_reward = 5.0  # 存活200步奖励
+            milestone_reward = 3.0   # 存活200步奖励
+        elif self.step_no == 300:
+            milestone_reward = 4.0   # 存活300步奖励（第二个怪物出现）
+        elif self.step_no == 400:
+            milestone_reward = 5.0   # 存活400步奖励
+        elif self.step_no == 500:
+            milestone_reward = 6.0   # 存活500步奖励（怪物加速）
+        elif self.step_no == 600:
+            milestone_reward = 7.0   # 存活600步奖励
+        elif self.step_no == 750:
+            milestone_reward = 8.0   # 存活750步奖励
+        elif self.step_no == 900:
+            milestone_reward = 9.0   # 存活900步奖励
+        elif self.step_no == 1000:
+            milestone_reward = 10.0  # 存活1000步奖励（通关）
             
         # Emergency avoidance reward / 紧急避险奖励
         avoidance_reward = 0.0
@@ -343,22 +379,25 @@ class Preprocessor:
                 move_dist = np.sqrt((hero_pos["x"] - last_x) ** 2 + (hero_pos["z"] - last_z) ** 2)
                 # 归一化移动距离（假设每步最多移动1格）
                 move_dist_norm = _norm(move_dist, 2.0)
-                movement_reward = 0.02 * move_dist_norm  # 移动奖励
+                # 后期移动奖励更高（鼓励在危险环境中保持移动）
+                movement_reward = 0.02 * move_dist_norm * (1.0 + progress_ratio * 0.5)
             except Exception:
                 pass
         
-        # Skill usage reward / 技能使用奖励
+        # Skill usage reward with dynamic scaling / 技能使用奖励（动态缩放）
         skill_reward = 0.0
+        # 后期技能使用奖励更高（因为危险更大）
+        skill_multiplier = 1.0 + progress_ratio * 1.5
         
         # Flash skill reward / 闪现技能奖励
         # 鼓励在危险时刻使用闪现
         if last_action == 8:  # 动作8是使用闪现
             if max_collision_risk > 0.5:  # 高风险时使用闪现
-                skill_reward += 1.0  # 高奖励
+                skill_reward += 1.0 * skill_multiplier  # 高奖励
             elif max_collision_risk > 0.3:  # 中等风险时使用闪现
-                skill_reward += 0.5  # 中等奖励
+                skill_reward += 0.5 * skill_multiplier  # 中等奖励
             else:
-                skill_reward += 0.1  # 低风险时使用闪现，小奖励
+                skill_reward += 0.1 * skill_multiplier  # 低风险时使用闪现，小奖励
         
         # Talent skill reward / 天赋技能奖励
         # 鼓励在合适时机使用天赋技能

@@ -13,9 +13,9 @@ Configuration for Gorge Chase PPO.
 
 class Config:
 
-    # Feature dimensions / 特征维度（共59维 - 增加了技能动作）
+    # Feature dimensions / 特征维度（共61维 - 增加了技能可用特征）
     FEATURES = [
-        4,    # 英雄自身特征
+        6,    # 英雄自身特征（增加了2个技能可用特征）
         9,    # 怪物1特征（增加了4个高级特征）
         9,    # 怪物2特征（增加了4个高级特征）
         4,    # 宝箱特征（新增）
