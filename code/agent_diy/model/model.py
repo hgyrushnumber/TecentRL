@@ -6,8 +6,13 @@
 """
 Author: Tencent AI Arena Authors
 
-Neural network model for Gorge Chase PPO.
-峡谷追猎 PPO 神经网络模型。
+SAC Networks for Gorge Chase (Discrete Action Space).
+峡谷追猎 SAC 网络（离散动作空间）。
+
+网络结构：
+  Actor   : obs → 共享骨干 → 动作概率分布 π(a|s)
+  Critic  : obs → 双Q网络 Q1(s), Q2(s) → 每个动作的Q值向量
+  (双Q网络用于减少过估计偏差，取 min(Q1, Q2) 计算目标值)
 """
 
 import torch
@@ -17,82 +22,111 @@ import numpy as np
 from agent_diy.conf.conf import Config
 
 
-def make_fc_layer(in_features, out_features):
-    """Create a linear layer with orthogonal initialization.
-
-    创建正交初始化的线性层。
-    """
-    fc = nn.Linear(in_features, out_features)
-    nn.init.orthogonal_(fc.weight.data)
-    nn.init.zeros_(fc.bias.data)
+def _make_fc(in_f, out_f, gain=1.0):
+    """Linear layer with orthogonal init. / 正交初始化线性层。"""
+    fc = nn.Linear(in_f, out_f)
+    nn.init.orthogonal_(fc.weight, gain=gain)
+    nn.init.zeros_(fc.bias)
     return fc
 
 
-class Model(nn.Module):
-    """Enhanced MLP backbone with residual connections + Actor/Critic dual heads.
+def _build_mlp(input_dim, hidden_dim, mid_dim):
+    """Shared MLP backbone with residual connection.
 
-    增强MLP骨干网络（含残差连接）+ Actor/Critic 双头。
+    共享MLP骨干网络（含残差连接）。
+    """
+    backbone = nn.Sequential(
+        _make_fc(input_dim, hidden_dim),
+        nn.LayerNorm(hidden_dim),
+        nn.ReLU(),
+        _make_fc(hidden_dim, hidden_dim),
+        nn.LayerNorm(hidden_dim),
+        nn.ReLU(),
+        _make_fc(hidden_dim, mid_dim),
+        nn.LayerNorm(mid_dim),
+        nn.ReLU(),
+    )
+    skip = _make_fc(input_dim, mid_dim)
+    return backbone, skip
+
+
+class Actor(nn.Module):
+    """SAC Actor: outputs action probability distribution π(a|s).
+
+    SAC Actor 网络：输出合法动作上的概率分布。
     """
 
-    def __init__(self, device=None):
+    def __init__(self, input_dim, hidden_dim, mid_dim, action_num):
         super().__init__()
-        self.model_name = "gorge_chase_enhanced"
-        self.device = device
-
-        input_dim = Config.DIM_OF_OBSERVATION  # 现在为50维
-        hidden_dim = 256  # 增加隐藏层大小以适应更多特征
-        mid_dim = 128
-        action_num = Config.ACTION_NUM
-        value_num = Config.VALUE_NUM
-
-        # Enhanced shared backbone with residual connections / 增强共享骨干网络（含残差连接）
-        self.backbone = nn.Sequential(
-            make_fc_layer(input_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),  # 添加层归一化
-            nn.ReLU(),
-            make_fc_layer(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.ReLU(),
-            make_fc_layer(hidden_dim, mid_dim),
+        self.backbone, self.skip = _build_mlp(input_dim, hidden_dim, mid_dim)
+        self.head = nn.Sequential(
+            _make_fc(mid_dim, mid_dim),
             nn.LayerNorm(mid_dim),
             nn.ReLU(),
+            _make_fc(mid_dim, action_num, gain=0.01),  # 小增益稳定初始输出
         )
-        
-        # Skip connection / 跳跃连接
-        self.skip_connection = make_fc_layer(input_dim, mid_dim)
 
-        # Enhanced Actor head / 增强策略头
-        self.actor_hidden = make_fc_layer(mid_dim, mid_dim)
-        self.actor_norm = nn.LayerNorm(mid_dim)
-        self.actor_head = make_fc_layer(mid_dim, action_num)
-
-        # Enhanced Critic head / 增强价值头
-        self.critic_hidden = make_fc_layer(mid_dim, mid_dim)
-        self.critic_norm = nn.LayerNorm(mid_dim)
-        self.critic_head = make_fc_layer(mid_dim, value_num)
-
-    def forward(self, obs, inference=False):
-        # Backbone with residual connection / 骨干网络（含残差连接）
-        backbone_out = self.backbone(obs)
-        skip_out = self.skip_connection(obs)
-        hidden = backbone_out + skip_out  # Residual connection
-        
-        # Actor head with enhanced structure / 增强策略头
-        actor_hidden = self.actor_hidden(hidden)
-        actor_hidden = self.actor_norm(actor_hidden)
-        actor_hidden = nn.functional.relu(actor_hidden)
-        logits = self.actor_head(actor_hidden)
-        
-        # Critic head with enhanced structure / 增强价值头
-        critic_hidden = self.critic_hidden(hidden)
-        critic_hidden = self.critic_norm(critic_hidden)
-        critic_hidden = nn.functional.relu(critic_hidden)
-        value = self.critic_head(critic_hidden)
-        
-        return logits, value
+    def forward(self, obs, legal_action=None):
+        """Return action logits and masked probability distribution."""
+        h = self.backbone(obs) + self.skip(obs)
+        logits = self.head(h)
+        if legal_action is not None:
+            # 非法动作掩码：-1e9 使其概率趋近0
+            logits = logits + (1.0 - legal_action) * (-1e9)
+        probs = torch.softmax(logits, dim=-1)
+        return probs
 
     def set_train_mode(self):
         self.train()
 
     def set_eval_mode(self):
         self.eval()
+
+
+class Critic(nn.Module):
+    """SAC Critic: dual Q-networks Q1, Q2 outputting Q(s, a) for all actions.
+
+    双Q网络：同时输出所有动作的Q值，取 min 减少过估计。
+    """
+
+    def __init__(self, input_dim, hidden_dim, mid_dim, action_num):
+        super().__init__()
+        # Q1 网络
+        self.backbone1, self.skip1 = _build_mlp(input_dim, hidden_dim, mid_dim)
+        self.head1 = nn.Sequential(
+            _make_fc(mid_dim, mid_dim),
+            nn.LayerNorm(mid_dim),
+            nn.ReLU(),
+            _make_fc(mid_dim, action_num),
+        )
+        # Q2 网络
+        self.backbone2, self.skip2 = _build_mlp(input_dim, hidden_dim, mid_dim)
+        self.head2 = nn.Sequential(
+            _make_fc(mid_dim, mid_dim),
+            nn.LayerNorm(mid_dim),
+            nn.ReLU(),
+            _make_fc(mid_dim, action_num),
+        )
+
+    def forward(self, obs):
+        """Return Q1(s,·) and Q2(s,·) for all actions."""
+        h1 = self.backbone1(obs) + self.skip1(obs)
+        q1 = self.head1(h1)
+        h2 = self.backbone2(obs) + self.skip2(obs)
+        q2 = self.head2(h2)
+        return q1, q2
+
+    def q1(self, obs):
+        """Return only Q1 (used in actor update)."""
+        h1 = self.backbone1(obs) + self.skip1(obs)
+        return self.head1(h1)
+
+    def set_train_mode(self):
+        self.train()
+
+    def set_eval_mode(self):
+        self.eval()
+
+
+# ── 兼容旧接口：Model = Actor（workflow 中仍用 agent.model 做推理）────────
+Model = Actor

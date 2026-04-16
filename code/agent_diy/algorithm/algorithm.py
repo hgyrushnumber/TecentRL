@@ -6,186 +6,192 @@
 """
 Author: Tencent AI Arena Authors
 
-PPO algorithm implementation for Gorge Chase PPO.
-峡谷追猎 PPO 算法实现。
+Discrete SAC algorithm for Gorge Chase.
+峡谷追猎 离散动作 SAC 算法实现。
 
 损失组成：
-  total_loss = vf_coef * value_loss + policy_loss - beta * entropy_loss
+  critic_loss = MSE( Q_i(s,a),  r + γ*(1-done)* Σ_a' π(a'|s') * [min(Q1',Q2')(s',a') - α*log π(a'|s')] )
+  actor_loss  = Σ_a π(a|s) * [ α*log π(a|s) - min(Q1,Q2)(s,a) ]
+  alpha_loss  = -α * (H[π] - H_target)   (auto-alpha)
 
-  - value_loss  : Clipped value function loss（裁剪价值函数损失）
-  - policy_loss : PPO Clipped surrogate objective（PPO 裁剪替代目标）
-  - entropy_loss: Action entropy regularization（动作熵正则化，鼓励探索）
+参考：Christodoulou (2019) "Soft Actor-Critic for Discrete Action Settings"
 """
 
 import os
 import time
+import copy
 
 import numpy as np
 import torch
+import torch.nn.functional as F
+
 from agent_diy.conf.conf import Config
+from agent_diy.model.model import Actor, Critic
 
 
 class Algorithm:
-    def __init__(self, model, optimizer, device=None, logger=None, monitor=None):
+    def __init__(self, actor, critic, device=None, logger=None, monitor=None):
         self.device = device
-        self.model = model
-        self.optimizer = optimizer
-        self.parameters = [p for pg in self.optimizer.param_groups for p in pg["params"]]
+        self.actor = actor           # Actor 网络
+        self.critic = critic         # 在线双Q网络
         self.logger = logger
         self.monitor = monitor
 
-        self.label_size = Config.ACTION_NUM
-        self.value_num = Config.VALUE_NUM
-        self.var_beta = Config.BETA_START
-        self.vf_coef = Config.VF_COEF
-        self.clip_param = Config.CLIP_PARAM
+        # 目标Q网络（软更新，不参与梯度）
+        self.critic_target = copy.deepcopy(critic)
+        for p in self.critic_target.parameters():
+            p.requires_grad = False
 
-        # Enhanced training parameters / 增强训练参数
-        # 提高初始熵系数：鼓励早期充分探索，避免策略过早收敛
-        self.entropy_start = 0.01
-        self.entropy_end = 0.001
-        self.entropy_decay_steps = 50000
+        self.action_num = Config.ACTION_NUM
+        self.gamma = Config.GAMMA
+        self.tau = Config.TAU
+        self.grad_clip = Config.GRAD_CLIP_RANGE
 
-        # Advantage normalization (per-batch) / 优势函数归一化（批内）
-        # 正确做法：归一化 advantage 而非 reward，稳定策略梯度更新幅度
-        self.advantage_norm = True
-        
-        self.last_report_monitor_time = 0
-        self.train_step = 0
-
-    def learn(self, list_sample_data):
-        """Training entry: PPO update on a batch of SampleData.
-
-        训练入口：对一批 SampleData 执行 PPO 更新。
-        """
-        obs = torch.stack([f.obs for f in list_sample_data]).to(self.device)
-        legal_action = torch.stack([f.legal_action for f in list_sample_data]).to(self.device)
-        act = torch.stack([f.act for f in list_sample_data]).to(self.device).view(-1, 1)
-        old_prob = torch.stack([f.prob for f in list_sample_data]).to(self.device)
-        reward = torch.stack([f.reward for f in list_sample_data]).to(self.device)
-        advantage = torch.stack([f.advantage for f in list_sample_data]).to(self.device)
-        old_value = torch.stack([f.value for f in list_sample_data]).to(self.device)
-        reward_sum = torch.stack([f.reward_sum for f in list_sample_data]).to(self.device)
-        
-        # Update entropy coefficient with scheduling / 更新熵系数（调度）
-        self._update_entropy_coefficient()
-
-        # Normalize advantage per batch / 批内优势函数归一化（稳定策略梯度）
-        if self.advantage_norm:
-            adv_mean = advantage.mean()
-            adv_std = advantage.std().clamp(min=1e-8)
-            advantage = (advantage - adv_mean) / adv_std
-
-        self.model.set_train_mode()
-        self.optimizer.zero_grad()
-
-        logits, value_pred = self.model(obs)
-
-        total_loss, info_list = self._compute_loss(
-            logits=logits,
-            value_pred=value_pred,
-            legal_action=legal_action,
-            old_action=act,
-            old_prob=old_prob,
-            advantage=advantage,
-            old_value=old_value,
-            reward_sum=reward_sum,
-            reward=reward,
+        # 优化器
+        self.actor_optimizer = torch.optim.Adam(
+            self.actor.parameters(), lr=Config.INIT_LEARNING_RATE_START
+        )
+        self.critic_optimizer = torch.optim.Adam(
+            self.critic.parameters(), lr=Config.INIT_LEARNING_RATE_START
         )
 
-        total_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.parameters, Config.GRAD_CLIP_RANGE)
-        self.optimizer.step()
+        # 自动熵调整 α
+        # 目标熵：H_target = ratio * log(|A|)（鼓励接近均匀分布）
+        self.target_entropy = Config.TARGET_ENTROPY_RATIO * np.log(self.action_num)
+        self.log_alpha = torch.zeros(1, requires_grad=True, device=device)
+        self.alpha = self.log_alpha.exp().item()
+        self.alpha_optimizer = torch.optim.Adam(
+            [self.log_alpha], lr=Config.ALPHA_LR
+        )
+
+        self.train_step = 0
+        self.last_report_monitor_time = 0
+
+    def learn(self, batch):
+        """One SAC update step on a sampled batch.
+
+        对采样的一批转换执行一次SAC更新（Critic + Actor + Alpha）。
+        """
+        # ── 解包批次 ─────────────────────────────────────────────────
+        obs = torch.stack([f.obs for f in batch]).to(self.device)
+        legal_action = torch.stack([f.legal_action for f in batch]).to(self.device)
+        act = torch.stack([f.act for f in batch]).to(self.device).long().view(-1)
+        reward = torch.stack([f.reward for f in batch]).to(self.device).view(-1, 1)
+        next_obs = torch.stack([f.next_obs for f in batch]).to(self.device)
+        next_legal = torch.stack([f.next_legal_action for f in batch]).to(self.device)
+        done = torch.stack([f.done for f in batch]).to(self.device).view(-1, 1)
+
+        # ── 1. Critic 损失 ────────────────────────────────────────────
+        with torch.no_grad():
+            # 下一状态的策略概率分布
+            next_probs = self.actor(next_obs, next_legal)          # (B, A)
+            next_log_probs = torch.log(next_probs.clamp(1e-9))    # (B, A)
+
+            # 目标Q值：用目标网络
+            q1_next, q2_next = self.critic_target(next_obs)        # (B, A)
+            min_q_next = torch.min(q1_next, q2_next)               # (B, A)
+
+            # 软贝尔曼目标：期望 over 下一状态所有动作
+            # V(s') = Σ_a π(a|s') * [Q(s',a) - α*logπ(a|s')]
+            v_next = (next_probs * (min_q_next - self.alpha * next_log_probs)).sum(dim=1, keepdim=True)
+            target_q = reward + self.gamma * (1.0 - done) * v_next  # (B, 1)
+
+        q1_all, q2_all = self.critic(obs)                          # (B, A)
+        q1 = q1_all.gather(1, act.unsqueeze(1))                   # (B, 1) 取执行动作的Q值
+        q2 = q2_all.gather(1, act.unsqueeze(1))
+
+        critic_loss = F.mse_loss(q1, target_q) + F.mse_loss(q2, target_q)
+
+        self.critic_optimizer.zero_grad()
+        critic_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.grad_clip)
+        self.critic_optimizer.step()
+
+        # ── 2. Actor 损失 ─────────────────────────────────────────────
+        probs = self.actor(obs, legal_action)                      # (B, A)
+        log_probs = torch.log(probs.clamp(1e-9))                  # (B, A)
+
+        with torch.no_grad():
+            q1_pi, q2_pi = self.critic(obs)
+            min_q_pi = torch.min(q1_pi, q2_pi)                    # (B, A)
+
+        # actor_loss = E_π[ α*logπ - Q ] (期望over所有动作)
+        actor_loss = (probs * (self.alpha * log_probs - min_q_pi)).sum(dim=1).mean()
+
+        self.actor_optimizer.zero_grad()
+        actor_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.grad_clip)
+        self.actor_optimizer.step()
+
+        # ── 3. 自动 α 更新 ────────────────────────────────────────────
+        # H[π] = -Σ_a π(a|s) * logπ(a|s)（当前策略的熵）
+        with torch.no_grad():
+            entropy = -(probs * log_probs).sum(dim=1).mean()
+
+        alpha_loss = self.log_alpha * (entropy - self.target_entropy).detach()
+
+        self.alpha_optimizer.zero_grad()
+        alpha_loss.backward()
+        self.alpha_optimizer.step()
+        self.alpha = self.log_alpha.exp().clamp(1e-4, 1.0).item()
+
+        # ── 4. 软更新目标Q网络 ────────────────────────────────────────
+        self._soft_update(self.critic, self.critic_target)
+
         self.train_step += 1
 
+        # ── 监控日志（每60秒一次）────────────────────────────────────
         now = time.time()
         if now - self.last_report_monitor_time >= 60:
             results = {
-                "total_loss": round(total_loss.item(), 4),
-                "value_loss": round(info_list[0].item(), 4),
-                "policy_loss": round(info_list[1].item(), 4),
-                "entropy_loss": round(info_list[2].item(), 4),
-                "reward": round(reward.mean().item(), 4),
+                "critic_loss": round(critic_loss.item(), 4),
+                "actor_loss": round(actor_loss.item(), 4),
+                "alpha": round(self.alpha, 4),
+                "entropy": round(entropy.item(), 4),
+                "target_entropy": round(self.target_entropy, 4),
             }
             self.logger.info(
-                f"[train] total_loss:{results['total_loss']} "
-                f"policy_loss:{results['policy_loss']} "
-                f"value_loss:{results['value_loss']} "
-                f"entropy:{results['entropy_loss']}"
+                f"[SAC train] step:{self.train_step} "
+                f"critic_loss:{results['critic_loss']} "
+                f"actor_loss:{results['actor_loss']} "
+                f"alpha:{results['alpha']} "
+                f"entropy:{results['entropy']:.3f}/{results['target_entropy']:.3f}"
             )
             if self.monitor:
                 self.monitor.put_data({os.getpid(): results})
             self.last_report_monitor_time = now
 
-    def _compute_loss(
-        self,
-        logits,
-        value_pred,
-        legal_action,
-        old_action,
-        old_prob,
-        advantage,
-        old_value,
-        reward_sum,
-        reward,
-    ):
-        """Compute standard PPO loss (policy + value + entropy).
+    def _soft_update(self, online, target):
+        """Polyak soft update: θ_target ← τ*θ_online + (1-τ)*θ_target."""
+        for p_o, p_t in zip(online.parameters(), target.parameters()):
+            p_t.data.mul_(1.0 - self.tau)
+            p_t.data.add_(self.tau * p_o.data)
 
-        计算标准 PPO 损失（策略损失 + 价值损失 + 熵正则化）。
-        """
-        # Masked softmax / 合法动作掩码 softmax
-        prob_dist = self._masked_softmax(logits, legal_action)
-
-        # Policy loss (PPO Clip) / 策略损失
-        one_hot = torch.nn.functional.one_hot(old_action[:, 0].long(), self.label_size).float()
-        new_prob = (one_hot * prob_dist).sum(1, keepdim=True)
-        old_action_prob = (one_hot * old_prob).sum(1, keepdim=True).clamp(1e-9)
-        ratio = new_prob / old_action_prob
-        adv = advantage.view(-1, 1)
-        policy_loss1 = -ratio * adv
-        policy_loss2 = -ratio.clamp(1 - self.clip_param, 1 + self.clip_param) * adv
-        policy_loss = torch.maximum(policy_loss1, policy_loss2).mean()
-
-        # Value loss (Clipped) / 价值损失
-        vp = value_pred
-        ov = old_value
-        tdret = reward_sum
-        value_clip = ov + (vp - ov).clamp(-self.clip_param, self.clip_param)
-        value_loss = (
-            0.5
-            * torch.maximum(
-                torch.square(tdret - vp),
-                torch.square(tdret - value_clip),
-            ).mean()
+    def save_model(self, path, id="1"):
+        """Save actor + critic checkpoints."""
+        torch.save(
+            {k: v.clone().cpu() for k, v in self.actor.state_dict().items()},
+            f"{path}/actor.ckpt-{id}.pkl",
         )
+        torch.save(
+            {k: v.clone().cpu() for k, v in self.critic.state_dict().items()},
+            f"{path}/critic.ckpt-{id}.pkl",
+        )
+        self.logger.info(f"[SAC] saved model to {path} (id={id})")
 
-        # Entropy loss / 熵损失
-        entropy_loss = (-prob_dist * torch.log(prob_dist.clamp(1e-9, 1))).sum(1).mean()
-
-        # Total loss / 总损失
-        total_loss = self.vf_coef * value_loss + policy_loss - self.var_beta * entropy_loss
-
-        return total_loss, [value_loss, policy_loss, entropy_loss]
-
-    def _update_entropy_coefficient(self):
-        """Update entropy coefficient with linear decay scheduling.
-
-        使用线性衰减调度更新熵系数。
-        初期高熵（0.01）鼓励充分探索，后期低熵（0.001）策略收敛精细化。
-        """
-        if self.train_step < self.entropy_decay_steps:
-            progress = self.train_step / self.entropy_decay_steps
-            self.var_beta = self.entropy_start - (self.entropy_start - self.entropy_end) * progress
-        else:
-            self.var_beta = self.entropy_end
-
-    def _masked_softmax(self, logits, legal_action):
-        """Softmax with legal action masking (suppress illegal actions).
-
-        合法动作掩码下的 softmax（将非法动作概率压为极小值）。
-        """
-        label_max, _ = torch.max(logits * legal_action, dim=1, keepdim=True)
-        label = logits - label_max
-        label = label * legal_action
-        label = label + 1e5 * (legal_action - 1)
-        return torch.nn.functional.softmax(label, dim=1)
+    def load_model(self, path, id="1"):
+        """Load actor + critic checkpoints."""
+        actor_path = f"{path}/actor.ckpt-{id}.pkl"
+        critic_path = f"{path}/critic.ckpt-{id}.pkl"
+        try:
+            self.actor.load_state_dict(
+                torch.load(actor_path, map_location=self.device)
+            )
+            self.critic.load_state_dict(
+                torch.load(critic_path, map_location=self.device)
+            )
+            # 同步更新目标网络
+            self.critic_target.load_state_dict(self.critic.state_dict())
+            self.logger.info(f"[SAC] loaded model from {path} (id={id})")
+        except FileNotFoundError:
+            self.logger.info(f"[SAC] no checkpoint found at {path}, training from scratch")
