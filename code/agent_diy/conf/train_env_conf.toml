@@ -34,3 +34,34 @@ monster_speedup = 500
 # Maximum steps per episode. The episode ends when this limit is reached. Range: 1~2000.
 # 最大步数。单局任务预测步数达到最大步数时，任务结束。可配置范围为1～2000。
 max_step = 1000
+
+[training_optimization]
+# Enhanced training parameters for improved performance
+# 增强训练参数以提升性能
+
+# Learning rate scheduling
+# 学习率调度
+lr_schedule = true
+lr_warmup_steps = 1000
+lr_decay_steps = 50000
+
+# Entropy coefficient scheduling
+# 熵系数调度
+entropy_schedule = true
+entropy_start = 0.001
+entropy_end = 0.0001
+entropy_decay_steps = 30000
+
+# Gradient clipping enhancement
+# 梯度裁剪增强
+grad_clip_range = 0.5
+grad_clip_schedule = true
+
+# Reward normalization
+# 奖励归一化
+reward_norm = true
+reward_norm_alpha = 0.99
+
+# Feature normalization
+# 特征归一化
+feature_norm = true
