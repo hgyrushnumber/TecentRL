@@ -127,10 +127,10 @@ class EpisodeRunner:
                     treasure_count = env_info.get("treasure_count", 0)
 
                     if terminated:
-                        final_reward[0] = -10.0
+                        final_reward[0] = -2.0   # 被抓：适度惩罚，不再灾难性
                         result_str = "FAIL"
                     else:
-                        final_reward[0] = 10.0
+                        final_reward[0] = 2.0    # 生存至终：适度奖励
                         result_str = "WIN"
 
                     self.logger.info(

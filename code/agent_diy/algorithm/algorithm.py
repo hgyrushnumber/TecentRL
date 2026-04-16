@@ -89,8 +89,8 @@ class Algorithm:
                 )
             return
 
-        # 3. 执行 N 次梯度更新（N = 本局步数，保持 1:1 比例）
-        n_updates = len(list_sample_data)
+        # 3. 执行梯度更新（上限32次，防止早期buffer数据量少时过拟合）
+        n_updates = min(len(list_sample_data), 32)
         for _ in range(n_updates):
             batch = self.replay_buffer.sample(self.batch_size)
             self._update(batch)

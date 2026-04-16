@@ -235,10 +235,10 @@ class Preprocessor:
         # 3. 碰撞风险惩罚（固定权重）
         risk_penalty = -0.03 * max_collision_risk_norm
 
-        # 4. 里程碑奖励
-        _milestones = {50: 0.5, 100: 1.0, 150: 2.0, 200: 3.0,
-                       300: 4.0, 400: 5.0, 500: 6.0, 600: 7.0,
-                       750: 8.0, 900: 9.0, 1000: 10.0}
+        # 4. 里程碑奖励（统一缩放至 0.05~0.3，与存活奖励同量级）
+        _milestones = {50: 0.05, 100: 0.08, 150: 0.10, 200: 0.12,
+                       300: 0.15, 400: 0.18, 500: 0.20, 600: 0.22,
+                       750: 0.25, 900: 0.28, 1000: 0.30}
         milestone_reward = _milestones.get(self.step_no, 0.0)
 
         # 5. 紧急避险奖励
@@ -247,34 +247,34 @@ class Preprocessor:
                 cur_min_dist_norm > self.last_min_monster_dist_norm + 0.05):
             avoidance_reward = 0.3
 
-        # 6. 宝箱收集奖励
+        # 6. 宝箱收集奖励（缩放到 0.3/个，与存活奖励拉齐）
         treasure_reward = 0.0
         try:
             cur_tc = int(round(treasure_feat[3] * 10))
             if self.last_treasure_count == -1:
                 self.last_treasure_count = cur_tc
             elif cur_tc < self.last_treasure_count:
-                treasure_reward = 2.0 * (self.last_treasure_count - cur_tc)
+                treasure_reward = 0.3 * (self.last_treasure_count - cur_tc)
                 self.last_treasure_count = cur_tc
         except Exception:
             pass
 
-        # 7. 接近宝箱奖励
+        # 7. 接近宝箱奖励（保持不变，量级已合理）
         treasure_proximity_reward = 0.0
         if 0.0 < treasure_feat[2] < 0.3:
-            treasure_proximity_reward = 0.1 * (1.0 - treasure_feat[2])
+            treasure_proximity_reward = 0.05 * (1.0 - treasure_feat[2])
 
-        # 8. Buff获取奖励
+        # 8. Buff获取奖励（缩放到 0.2）
         buff_reward = 0.0
         cur_buff_active = buff_remain_norm > 0.01
         if cur_buff_active and not self.last_buff_active:
-            buff_reward = 1.0
+            buff_reward = 0.2
         self.last_buff_active = cur_buff_active
 
-        # 9. 接近Buff奖励
+        # 9. 接近Buff奖励（保持不变，量级已合理）
         buff_proximity_reward = 0.0
         if 0.0 < buff_feat[2] < 0.3:
-            buff_proximity_reward = 0.05 * (1.0 - buff_feat[2])
+            buff_proximity_reward = 0.03 * (1.0 - buff_feat[2])
 
         # 10. 移动探索奖励
         movement_reward = 0.0
@@ -284,18 +284,18 @@ class Preprocessor:
             movement_reward = 0.02 * _norm(move_dist, 2.0) * (1.0 + progress_ratio * 0.5)
         self.last_hero_pos = (hx, hz)
 
-        # 11. 技能使用奖励
+        # 11. 技能使用奖励（缩放到 0.05~0.2，与存活奖励同量级）
         skill_reward = 0.0
-        skill_mult = 1.0 + progress_ratio * 1.5
+        skill_mult = 1.0 + progress_ratio * 0.5
         if last_action == 8:  # 闪现
             if max_collision_risk_norm > 0.5:
-                skill_reward = 1.0 * skill_mult
+                skill_reward = 0.15 * skill_mult
             elif max_collision_risk_norm > 0.3:
-                skill_reward = 0.5 * skill_mult
+                skill_reward = 0.08 * skill_mult
             else:
-                skill_reward = 0.1 * skill_mult
+                skill_reward = 0.02 * skill_mult
         elif last_action == 9:  # 天赋
-            skill_reward = 0.8 if cur_min_dist_norm < 0.5 else 0.3
+            skill_reward = 0.10 if cur_min_dist_norm < 0.5 else 0.05
 
         # 更新状态
         self.last_min_monster_dist_norm = cur_min_dist_norm
