@@ -13,19 +13,19 @@ Configuration for Gorge Chase SAC.
 
 class Config:
 
-    # Feature dimensions / 特征维度（共67维）
+    # Feature dimensions / 特征维度（共102维）
     FEATURES = [
         6,    # 英雄自身特征
-        10,   # 怪物1特征（含方向角）
-        10,   # 怪物2特征（含方向角）
+        11,   # 怪物1特征（含完整方向角 sin+cos）
+        11,   # 怪物2特征（含完整方向角 sin+cos）
         6,    # 宝箱特征（含方向向量）
         5,    # Buff特征（含方向向量）
-        16,   # 局部地图特征
+        49,   # 局部地图特征（7×7窗口）
         10,   # 合法动作掩码
         4,    # 进度特征
     ]
     FEATURE_SPLIT_SHAPE = FEATURES
-    FEATURE_LEN = sum(FEATURE_SPLIT_SHAPE)   # 65
+    FEATURE_LEN = sum(FEATURE_SPLIT_SHAPE)   # 102
     DIM_OF_OBSERVATION = FEATURE_LEN
 
     # Action space / 动作空间：8移动 + 2技能
