@@ -48,6 +48,7 @@ class Preprocessor:
         self.last_hero_pos = None
         self.last_treasure_count = -1   # -1 表示未初始化
         self.last_buff_active = False
+        self.last_treasure_dist_norm = -1.0  # -1 表示未初始化，用于 delta 奖励
 
     def feature_process(self, env_obs, last_action):
         """Process env_obs into feature vector, legal_action mask, and reward.
@@ -168,8 +169,9 @@ class Preprocessor:
         except Exception:
             pass
 
-        # ── Buff特征 (3D) ────────────────────────────────────────────────
-        buff_feat = np.zeros(3, dtype=np.float32)
+        # ── Buff特征 (5D) ────────────────────────────────────────────────
+        # 新增方向向量(dx_norm, dz_norm)，与宝箱特征对齐，帮助模型感知buff方向
+        buff_feat = np.zeros(5, dtype=np.float32)
         try:
             buffs = frame_state.get("buffs", [])
             if buffs:
@@ -185,6 +187,11 @@ class Preprocessor:
                     buff_feat[0] = _norm(bx, MAP_SIZE)
                     buff_feat[1] = _norm(bz, MAP_SIZE)
                     buff_feat[2] = _norm(min_bd, MAX_DIST)
+                    # 方向向量：归一化到 [0,1]（原始范围 [-1,1]）
+                    dx = (bx - hx) / max(min_bd, 1e-6)
+                    dz = (bz - hz) / max(min_bd, 1e-6)
+                    buff_feat[3] = (dx + 1.0) * 0.5   # [0, 1]
+                    buff_feat[4] = (dz + 1.0) * 0.5   # [0, 1]
         except Exception:
             pass
 
@@ -223,17 +230,17 @@ class Preprocessor:
             1.0 if self.step_no > self.max_step * 0.5 else 0.0,  # 后半段标志
         ], dtype=np.float32)
 
-        # ── 拼接特征 (65D) ───────────────────────────────────────────────
+        # ── 拼接特征 (67D) ───────────────────────────────────────────────
         feature = np.concatenate([
             hero_feat,           # 6
             monster_feats[0],    # 10  (原9D + 方向角1D)
             monster_feats[1],    # 10  (原9D + 方向角1D)
             treasure_feat,       # 6   (原4D + 方向向量2D)
-            buff_feat,           # 3
+            buff_feat,           # 5   (原3D + 方向向量2D)
             map_feat,            # 16
             np.array(legal_action, dtype=np.float32),  # 10
             progress_feat,       # 4
-        ])  # total = 65
+        ])  # total = 67
 
         # ── 奖励计算 ─────────────────────────────────────────────────────
         progress_ratio = self.step_no / max(self.max_step, 1)
@@ -271,14 +278,21 @@ class Preprocessor:
         except Exception:
             pass
 
-        # 7. 接近宝箱引导奖励
-        # 收窄触发距离到 0.3（全图30%范围内），安全条件怪物距离>0.3
-        # 奖励随距离线性衰减，越近越高
+        # 7. 接近宝箱引导奖励（增强版）
+        # 触发范围扩大到 0.5（全图50%范围内），移除安全条件限制（risk_penalty已保障安全）
+        # 奖励随距离线性衰减，越近越高；同时增加宝箱距离缩小 delta 奖励
         treasure_proximity_reward = 0.0
-        if treasure_feat[2] > 0.0 and cur_min_dist_norm > 0.3:
-            # 距离越近奖励越高，0.3以外不给，0.3以内线性插值到0.06
-            proximity_ratio = max(0.0, 1.0 - treasure_feat[2] / 0.3)
-            treasure_proximity_reward = 0.06 * proximity_ratio
+        if treasure_feat[2] > 0.0:
+            # 距离越近奖励越高，0.5以外不给，0.5以内线性插值到0.18
+            proximity_ratio = max(0.0, 1.0 - treasure_feat[2] / 0.5)
+            treasure_proximity_reward = 0.18 * proximity_ratio
+            # delta 奖励：每步向宝箱靠近则额外给予奖励，鼓励持续接近
+            if self.last_treasure_dist_norm >= 0.0:
+                dist_delta = self.last_treasure_dist_norm - treasure_feat[2]
+                if dist_delta > 0:
+                    treasure_proximity_reward += 0.1 * dist_delta / 0.01  # 每0.01距离给0.1
+                    treasure_proximity_reward = min(treasure_proximity_reward, 0.4)  # 上限0.4
+        self.last_treasure_dist_norm = treasure_feat[2] if treasure_feat[2] > 0.0 else -1.0
 
         # 8. Buff获取奖励（缩放到 0.2）
         buff_reward = 0.0
@@ -287,10 +301,11 @@ class Preprocessor:
             buff_reward = 0.2
         self.last_buff_active = cur_buff_active
 
-        # 9. 接近Buff奖励（安全条件：怪物距离>0.4时才引导，避免与risk_penalty冲突）
+        # 9. 接近Buff奖励（触发范围扩大到0.5，安全条件：怪物距离>0.4）
         buff_proximity_reward = 0.0
-        if 0.0 < buff_feat[2] < 0.3 and cur_min_dist_norm > 0.4:
-            buff_proximity_reward = 0.03 * (1.0 - buff_feat[2])
+        if 0.0 < buff_feat[2] < 0.5 and cur_min_dist_norm > 0.4:
+            proximity_ratio_buff = max(0.0, 1.0 - buff_feat[2] / 0.5)
+            buff_proximity_reward = 0.05 * proximity_ratio_buff
 
         # 10. 移动探索奖励
         movement_reward = 0.0

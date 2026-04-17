@@ -13,13 +13,13 @@ Configuration for Gorge Chase SAC.
 
 class Config:
 
-    # Feature dimensions / 特征维度（共65维）
+    # Feature dimensions / 特征维度（共67维）
     FEATURES = [
         6,    # 英雄自身特征
         10,   # 怪物1特征（含方向角）
         10,   # 怪物2特征（含方向角）
         6,    # 宝箱特征（含方向向量）
-        3,    # Buff特征
+        5,    # Buff特征（含方向向量）
         16,   # 局部地图特征
         10,   # 合法动作掩码
         4,    # 进度特征
@@ -43,15 +43,15 @@ class Config:
     # target_entropy = ratio * log(|A|)，平衡探索与利用
     AUTO_ALPHA = True
     ALPHA_LR = 3e-4
-    TARGET_ENTROPY_RATIO = 0.5      # 降低目标熵，减少过度探索，加快收敛
+    TARGET_ENTROPY_RATIO = 0.75     # 提升到0.75，初期充分探索取宝路径，后期alpha自动衰减
 
     # Soft target update / 软更新系数
     TAU = 0.005                     # 回调至0.005，目标网络更新更稳定
 
     # Replay buffer / 经验回放池
     REPLAY_BUFFER_SIZE = 20_000     # 缓冲区容量
-    BATCH_SIZE = 512                # 每次训练采样批大小
-    LEARNING_STARTS = 8000          # 提高预热阈值，Q值充分稳定后再训练
+    BATCH_SIZE = 1024               # 增大批大小，提升梯度估计质量
+    LEARNING_STARTS = 4000          # 降低预热阈值，更早开始从经验学习
 
     # ── 兼容性保留（部分接口仍会读取）────────────────────────────────
     LAMDA = 0.95
