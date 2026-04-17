@@ -241,22 +241,28 @@ class Preprocessor:
 
         # 5. 紧急避险奖励（已移除：模型会故意靠近怪物再逃跑来反复触发，导致策略不稳定）
 
-        # 6. 宝箱收集奖励（缩放到 0.3/个，与存活奖励拉齐）
+        # 6. 宝箱收集奖励
+        # 任务得分：1个宝箱=100分=约67步；1步存活=0.02奖励
+        # 因此1个宝箱对应奖励 = 0.02 × 67 ≈ 1.34
         treasure_reward = 0.0
         try:
             cur_tc = int(round(treasure_feat[3] * 10))
             if self.last_treasure_count == -1:
                 self.last_treasure_count = cur_tc
             elif cur_tc < self.last_treasure_count:
-                treasure_reward = 0.3 * (self.last_treasure_count - cur_tc)
+                treasure_reward = 1.34 * (self.last_treasure_count - cur_tc)
                 self.last_treasure_count = cur_tc
         except Exception:
             pass
 
-        # 7. 接近宝箱奖励（安全条件：怪物距离>0.4时才引导，避免与risk_penalty冲突）
+        # 7. 接近宝箱引导奖励
+        # 放宽触发距离 0.3→0.6（覆盖全图约50%范围），安全条件适度放宽至>0.3
+        # 奖励随距离线性衰减，越近越高
         treasure_proximity_reward = 0.0
-        if 0.0 < treasure_feat[2] < 0.3 and cur_min_dist_norm > 0.4:
-            treasure_proximity_reward = 0.05 * (1.0 - treasure_feat[2])
+        if treasure_feat[2] > 0.0 and cur_min_dist_norm > 0.3:
+            # 距离越近奖励越高，0.6以外不给，0.6以内线性插值到0.08
+            proximity_ratio = max(0.0, 1.0 - treasure_feat[2] / 0.6)
+            treasure_proximity_reward = 0.08 * proximity_ratio
 
         # 8. Buff获取奖励（缩放到 0.2）
         buff_reward = 0.0
