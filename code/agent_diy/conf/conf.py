@@ -47,7 +47,7 @@ class Config:
     TAU = 0.005
 
     # Replay buffer / 经验回放池
-    REPLAY_BUFFER_SIZE = 100_000    # 缓冲区容量
+    REPLAY_BUFFER_SIZE = 20_000     # 缓冲区容量（约20局数据，自然淘汰旧策略，防止旧数据污染）
     BATCH_SIZE = 256                # 每次训练采样批大小
     LEARNING_STARTS = 1000          # 开始训练前先收集的样本数
 

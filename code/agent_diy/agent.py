@@ -106,10 +106,9 @@ class Agent(BaseAgent):
 
     # ── 模型存储（标准接口，单文件存 Actor，兼容框架）────────────────
     def save_model(self, path=None, id="1"):
-        """Save actor weights to a single file (standard interface).
+        """Save actor weights + full training state (optimizer, log_alpha, train_step).
 
-        存储 Actor 权重到单文件，符合框架约定（load_model 对应读取）。
-        Critic 权重单独存储供完整恢复用。
+        存储 Actor/Critic 权重及完整训练状态，支持断点续训。
         """
         # 主文件：actor，供 Actor 进程 load_model 拉取参数
         model_file = f"{path}/model.ckpt-{id}.pkl"
@@ -117,26 +116,52 @@ class Agent(BaseAgent):
             {k: v.clone().cpu() for k, v in self.model.state_dict().items()},
             model_file,
         )
-        # 附加存储 critic，供 Learner 恢复训练状态
+        # Critic 权重
         critic_file = f"{path}/critic.ckpt-{id}.pkl"
         torch.save(
             {k: v.clone().cpu() for k, v in self.critic.state_dict().items()},
             critic_file,
         )
+        # 完整训练状态（优化器 + log_alpha + train_step，断点续训必需）
+        train_state_file = f"{path}/train_state.ckpt-{id}.pkl"
+        torch.save(
+            {
+                "actor_opt": self.algorithm.actor_optimizer.state_dict(),
+                "critic_opt": self.algorithm.critic_optimizer.state_dict(),
+                "alpha_opt": self.algorithm.alpha_optimizer.state_dict(),
+                "log_alpha": self.algorithm.log_alpha.item(),
+                "train_step": self.algorithm.train_step,
+            },
+            train_state_file,
+        )
         if self.logger:
-            self.logger.info(f"[SAC] save model {model_file} successfully")
+            self.logger.info(
+                f"[SAC] save model {model_file} successfully "
+                f"(train_step={self.algorithm.train_step})"
+            )
 
     def load_model(self, path=None, id="1"):
         """Load actor weights (standard interface for Actor process).
 
         Actor 进程：只加载 Actor 权重用于推理。
-        Learner 进程：同时加载 Critic 权重恢复训练状态。
+        Learner 进程：同时加载完整训练状态（优化器/log_alpha/train_step）实现断点续训。
+        文件不存在时静默跳过，从头开始训练。
         """
         model_file = f"{path}/model.ckpt-{id}.pkl"
-        self.model.load_state_dict(
-            torch.load(model_file, map_location=self.device)
-        )
-        # 尝试加载 Critic（Learner 侧，Actor 侧文件可能不存在则跳过）
+        try:
+            self.model.load_state_dict(
+                torch.load(model_file, map_location=self.device)
+            )
+        except FileNotFoundError:
+            if self.logger:
+                self.logger.info(f"[SAC] no checkpoint at {model_file}, training from scratch")
+            return
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"[SAC] load actor failed: {e}, training from scratch")
+            return
+
+        # 尝试加载 Critic + 完整训练状态（Learner 侧断点续训）
         critic_file = f"{path}/critic.ckpt-{id}.pkl"
         try:
             self.critic.load_state_dict(
@@ -145,5 +170,23 @@ class Agent(BaseAgent):
             self.algorithm.critic_target.load_state_dict(self.critic.state_dict())
         except (FileNotFoundError, Exception):
             pass
+
+        # 恢复优化器状态（断点续训核心，Actor侧文件可能不存在则跳过）
+        train_state_file = f"{path}/train_state.ckpt-{id}.pkl"
+        try:
+            state = torch.load(train_state_file, map_location=self.device)
+            self.algorithm.actor_optimizer.load_state_dict(state["actor_opt"])
+            self.algorithm.critic_optimizer.load_state_dict(state["critic_opt"])
+            self.algorithm.alpha_optimizer.load_state_dict(state["alpha_opt"])
+            with torch.no_grad():
+                self.algorithm.log_alpha.fill_(state["log_alpha"])
+            self.algorithm.alpha = self.algorithm.log_alpha.exp().clamp(1e-4, 1.0).item()
+            self.algorithm.train_step = state.get("train_step", 0)
+        except (FileNotFoundError, Exception):
+            pass
+
         if self.logger:
-            self.logger.info(f"[SAC] load model {model_file} successfully")
+            self.logger.info(
+                f"[SAC] load model {model_file} successfully "
+                f"(train_step={self.algorithm.train_step})"
+            )

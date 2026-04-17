@@ -71,6 +71,15 @@ class Algorithm:
         self.train_step = 0
         self.last_report_monitor_time = 0
 
+        # 滑动窗口损失累积（用于每分钟上报平均值，避免瞬时抖动）
+        self._loss_accum = {
+            "critic_loss": 0.0,
+            "actor_loss": 0.0,
+            "alpha_loss": 0.0,
+            "entropy": 0.0,
+            "count": 0,
+        }
+
     # ── 框架调用入口（Learner 侧）────────────────────────────────────
     def learn(self, list_sample_data):
         """Receive one episode's transitions, push to buffer, then train.
@@ -89,8 +98,8 @@ class Algorithm:
                 )
             return
 
-        # 3. 执行梯度更新（上限32次，防止早期buffer数据量少时过拟合）
-        n_updates = min(len(list_sample_data), 32)
+        # 3. 执行梯度更新（上限64次，充分学习新数据经验）
+        n_updates = min(len(list_sample_data), 64)
         for _ in range(n_updates):
             batch = self.replay_buffer.sample(self.batch_size)
             self._update(batch)
@@ -153,32 +162,46 @@ class Algorithm:
 
         self.train_step += 1
 
-        # ── 日志（每60秒）────────────────────────────────────────────
+        # ── 累积损失（用于周期平均上报）─────────────────────────────
+        self._loss_accum["critic_loss"] += critic_loss.item()
+        self._loss_accum["actor_loss"]  += actor_loss.item()
+        self._loss_accum["alpha_loss"]  += alpha_loss.item()
+        self._loss_accum["entropy"]     += entropy.item()
+        self._loss_accum["count"]       += 1
+
+        # ── 日志（每60秒上报周期均值）────────────────────────────────
         now = time.time()
         if now - self.last_report_monitor_time >= 60:
+            cnt = max(self._loss_accum["count"], 1)
             results = {
-                "critic_loss": round(critic_loss.item(), 4),
-                "actor_loss": round(actor_loss.item(), 4),
-                "alpha": round(self.alpha, 4),
-                "entropy": round(entropy.item(), 4),
+                "critic_loss": round(self._loss_accum["critic_loss"] / cnt, 4),
+                "actor_loss":  round(self._loss_accum["actor_loss"]  / cnt, 4),
+                "alpha_loss":  round(self._loss_accum["alpha_loss"]  / cnt, 4),
+                "entropy":     round(self._loss_accum["entropy"]     / cnt, 4),
+                "alpha":       round(self.alpha, 4),
+                "target_entropy": round(self.target_entropy, 4),
                 "buffer_size": len(self.replay_buffer),
-                "train_step": self.train_step,
+                "train_step":  self.train_step,
             }
             if self.logger:
                 self.logger.info(
                     f"[SAC] step:{self.train_step} "
-                    f"critic:{results['critic_loss']} "
-                    f"actor:{results['actor_loss']} "
+                    f"critic_loss:{results['critic_loss']} "
+                    f"actor_loss:{results['actor_loss']} "
+                    f"alpha_loss:{results['alpha_loss']} "
+                    f"entropy:{results['entropy']:.3f}/{results['target_entropy']:.3f} "
                     f"alpha:{results['alpha']:.4f} "
-                    f"H:{results['entropy']:.3f}/{self.target_entropy:.3f} "
                     f"buf:{results['buffer_size']}"
                 )
             if self.monitor:
                 self.monitor.put_data({os.getpid(): results})
+            # 重置累积器
+            self._loss_accum = {k: 0.0 for k in self._loss_accum}
             self.last_report_monitor_time = now
 
-    # ── 模型存储 ─────────────────────────────────────────────────────
+    # ── 模型存储（完整训练状态，支持断点续训）──────────────────────
     def save_model(self, path, id="1"):
+        # 网络权重
         torch.save(
             {k: v.clone().cpu() for k, v in self.actor.state_dict().items()},
             f"{path}/actor.ckpt-{id}.pkl",
@@ -187,20 +210,74 @@ class Algorithm:
             {k: v.clone().cpu() for k, v in self.critic.state_dict().items()},
             f"{path}/critic.ckpt-{id}.pkl",
         )
+        torch.save(
+            {k: v.clone().cpu() for k, v in self.critic_target.state_dict().items()},
+            f"{path}/critic_target.ckpt-{id}.pkl",
+        )
+        # 优化器状态 + log_alpha + train_step（断点续训关键）
+        torch.save(
+            {
+                "actor_opt": self.actor_optimizer.state_dict(),
+                "critic_opt": self.critic_optimizer.state_dict(),
+                "alpha_opt": self.alpha_optimizer.state_dict(),
+                "log_alpha": self.log_alpha.item(),
+                "train_step": self.train_step,
+            },
+            f"{path}/train_state.ckpt-{id}.pkl",
+        )
         if self.logger:
-            self.logger.info(f"[SAC] saved model id={id} to {path}")
+            self.logger.info(
+                f"[SAC] saved model id={id} to {path} (train_step={self.train_step})"
+            )
 
     def load_model(self, path, id="1"):
+        # 加载网络权重
         try:
             self.actor.load_state_dict(
                 torch.load(f"{path}/actor.ckpt-{id}.pkl", map_location=self.device)
             )
+        except FileNotFoundError:
+            if self.logger:
+                self.logger.info(f"[SAC] no actor checkpoint, training from scratch")
+            return
+
+        try:
             self.critic.load_state_dict(
                 torch.load(f"{path}/critic.ckpt-{id}.pkl", map_location=self.device)
             )
+        except FileNotFoundError:
+            pass
+
+        try:
+            self.critic_target.load_state_dict(
+                torch.load(f"{path}/critic_target.ckpt-{id}.pkl", map_location=self.device)
+            )
+        except FileNotFoundError:
+            # 目标网络文件不存在时从 critic 复制
+            self.critic_target.load_state_dict(self.critic.state_dict())
+
+        # 恢复优化器状态 + log_alpha + train_step（断点续训核心）
+        try:
+            state = torch.load(
+                f"{path}/train_state.ckpt-{id}.pkl", map_location=self.device
+            )
+            self.actor_optimizer.load_state_dict(state["actor_opt"])
+            self.critic_optimizer.load_state_dict(state["critic_opt"])
+            self.alpha_optimizer.load_state_dict(state["alpha_opt"])
+            # 恢复 log_alpha（可训练参数，需要特殊处理）
+            with torch.no_grad():
+                self.log_alpha.fill_(state["log_alpha"])
+            self.alpha = self.log_alpha.exp().clamp(1e-4, 1.0).item()
+            self.train_step = state.get("train_step", 0)
+            if self.logger:
+                self.logger.info(
+                    f"[SAC] loaded model id={id} from {path} "
+                    f"(train_step={self.train_step}, alpha={self.alpha:.4f})"
+                )
+        except FileNotFoundError:
+            # 旧版checkpoint没有train_state文件，只恢复权重
             self.critic_target.load_state_dict(self.critic.state_dict())
             if self.logger:
-                self.logger.info(f"[SAC] loaded model id={id} from {path}")
-        except FileNotFoundError:
-            if self.logger:
-                self.logger.info(f"[SAC] no checkpoint at {path}, training from scratch")
+                self.logger.info(
+                    f"[SAC] loaded weights only (no train_state), optimizer reset"
+                )

@@ -50,7 +50,7 @@ def workflow(envs, agents, logger=None, monitor=None, *args, **kwargs):
             g_data.clear()
 
             now = time.time()
-            if now - last_save_model_time >= 1800:
+            if now - last_save_model_time >= 300:   # 每5分钟保存一次，Actor更快拿到最新模型
                 agent.save_model()
                 last_save_model_time = now
 
