@@ -38,12 +38,7 @@ monster_speedup = 800
 # 最大步数。单局任务预测步数达到最大步数时，任务结束。可配置范围为1～2000。
 max_step = 1000
 
-# ── 预训练模型加载 ──────────────────────────────────────────────────────────
-# Pretrained model id to load at the start of training.
-# 训练启动时加载的预训练模型 id（对应 backup_model 目录下的 model.ckpt-{id}.pkl）。
-# 留空字符串 "" 表示从头训练；填写具体 id（如 "500" 或 "latest"）则在第一局加载该 checkpoint。
-# 后续训练仍按 "latest" 滚动更新，不影响正常训练流程。
-pretrain_model_id = "0"
+
 
 [training_optimization]
 # Enhanced training parameters for improved performance
