@@ -16,6 +16,7 @@ Agent class for Gorge Chase SAC — distributed-compatible.
                完成后调用 save_model() 写入共享存储供 Actor 拉取
 """
 
+import os
 import torch
 
 torch.set_num_threads(1)
@@ -96,7 +97,28 @@ class Agent(BaseAgent):
 
     # ── 训练入口（Learner 侧，由框架调用）────────────────────────────
     def learn(self, list_sample_data):
-        return self.algorithm.learn(list_sample_data)
+        """Train and return loss dict (aligned with PPO interface).
+
+        训练并返回损失字典，字段与PPO对齐：
+          value_loss  → Critic MSE 损失（对应PPO的价值损失）
+          policy_loss → Actor 策略损失（对应PPO的策略损失）
+          entropy_loss→ 策略熵（对应PPO的熵损失）
+          total_loss  → value_loss + policy_loss 聚合
+        """
+        results = self.algorithm.learn(list_sample_data)
+        if results is not None:
+            # 实时上报到 monitor（与PPO look相同字段）
+            if self.monitor:
+                self.monitor.put_data({os.getpid(): results})
+            if self.logger:
+                self.logger.info(
+                    f"[SAC] train_step:{results['train_step']} "
+                    f"total_loss:{results['total_loss']} "
+                    f"value_loss:{results['value_loss']} "
+                    f"policy_loss:{results['policy_loss']} "
+                    f"entropy_loss:{results['entropy_loss']:.3f}"
+                )
+        return results
 
     # ── 动作解包 ─────────────────────────────────────────────────────
     def action_process(self, act_data, is_stochastic=True):

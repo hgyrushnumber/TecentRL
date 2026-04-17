@@ -228,9 +228,7 @@ class Preprocessor:
         # 1. 基础存活奖励（动态）
         survive_reward = 0.02 * (1.0 + progress_ratio)
 
-        # 2. 远离怪物奖励（单向，不惩罚靠近）
-        dist_delta = cur_min_dist_norm - self.last_min_monster_dist_norm
-        dist_shaping = 0.1 * max(dist_delta, 0.0) * (1.0 + progress_ratio)
+        # 2. 远离怪物奖励（已移除：dist_delta 方差过大，导致模型学到无意义震荡走位）
 
         # 3. 碰撞风险惩罚（固定权重）
         risk_penalty = -0.03 * max_collision_risk_norm
@@ -241,11 +239,7 @@ class Preprocessor:
         else:
             milestone_reward = 0.0
 
-        # 5. 紧急避险奖励
-        avoidance_reward = 0.0
-        if (self.last_min_monster_dist_norm < 0.3 and
-                cur_min_dist_norm > self.last_min_monster_dist_norm + 0.05):
-            avoidance_reward = 0.3
+        # 5. 紧急避险奖励（已移除：模型会故意靠近怪物再逃跑来反复触发，导致策略不稳定）
 
         # 6. 宝箱收集奖励（缩放到 0.3/个，与存活奖励拉齐）
         treasure_reward = 0.0
@@ -302,10 +296,8 @@ class Preprocessor:
 
         total_reward = (
             survive_reward
-            + dist_shaping
             + risk_penalty
             + milestone_reward
-            + avoidance_reward
             + treasure_reward
             + treasure_proximity_reward
             + buff_reward

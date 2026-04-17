@@ -86,6 +86,7 @@ class Algorithm:
 
         接收 Actor 发来的一局数据，推入 ReplayBuffer，再执行等量次数的 SAC 更新。
         符合分布式架构：框架在 Learner 侧调用此方法，Actor 侧不直接训练。
+        返回损失字典（对齐 PPO 字段格式），供框架实时展示。
         """
         # 1. 将本局数据推入 ReplayBuffer
         self.replay_buffer.push_batch(list_sample_data)
@@ -96,13 +97,32 @@ class Algorithm:
                 self.logger.info(
                     f"[SAC] warming up buffer: {len(self.replay_buffer)}/{Config.LEARNING_STARTS}"
                 )
-            return
+            return None
 
         # 3. 执行梯度更新（上限64次，充分学习新数据经验）
         n_updates = min(len(list_sample_data), 64)
         for _ in range(n_updates):
             batch = self.replay_buffer.sample(self.batch_size)
             self._update(batch)
+
+        # 4. 返回本局周期平均损失（实时上报给框架，对齐PPO字段名）
+        cnt = max(self._loss_accum["count"], 1)
+        results = {
+            # 对齐PPO字段：value_loss / policy_loss / entropy_loss / total_loss
+            "value_loss":   round(self._loss_accum["critic_loss"] / cnt, 4),
+            "policy_loss":  round(self._loss_accum["actor_loss"]  / cnt, 4),
+            "entropy_loss": round(self._loss_accum["entropy"]      / cnt, 4),
+            "total_loss":   round(
+                (self._loss_accum["critic_loss"] + self._loss_accum["actor_loss"]) / cnt, 4
+            ),
+            # SAC 专有字段
+            "alpha_loss":   round(self._loss_accum["alpha_loss"]  / cnt, 4),
+            "alpha":        round(self.alpha, 4),
+            "target_entropy": round(self.target_entropy, 4),
+            "buffer_size":  len(self.replay_buffer),
+            "train_step":   self.train_step,
+        }
+        return results
 
     # ── SAC 单次梯度更新 ─────────────────────────────────────────────
     def _update(self, batch):
@@ -169,27 +189,32 @@ class Algorithm:
         self._loss_accum["entropy"]     += entropy.item()
         self._loss_accum["count"]       += 1
 
-        # ── 日志（每60秒上报周期均值）────────────────────────────────
+        # ── 日志（每60秒上报周期均值，字段名对齐PPO）──────────────────
         now = time.time()
         if now - self.last_report_monitor_time >= 60:
             cnt = max(self._loss_accum["count"], 1)
             results = {
-                "critic_loss": round(self._loss_accum["critic_loss"] / cnt, 4),
-                "actor_loss":  round(self._loss_accum["actor_loss"]  / cnt, 4),
-                "alpha_loss":  round(self._loss_accum["alpha_loss"]  / cnt, 4),
-                "entropy":     round(self._loss_accum["entropy"]     / cnt, 4),
-                "alpha":       round(self.alpha, 4),
+                # 对齐PPO字段名，框架/看板可统一展示
+                "total_loss":   round(
+                    (self._loss_accum["critic_loss"] + self._loss_accum["actor_loss"]) / cnt, 4
+                ),
+                "value_loss":   round(self._loss_accum["critic_loss"] / cnt, 4),
+                "policy_loss":  round(self._loss_accum["actor_loss"]  / cnt, 4),
+                "entropy_loss": round(self._loss_accum["entropy"]     / cnt, 4),
+                # SAC 专有字段
+                "alpha_loss":   round(self._loss_accum["alpha_loss"]  / cnt, 4),
+                "alpha":        round(self.alpha, 4),
                 "target_entropy": round(self.target_entropy, 4),
-                "buffer_size": len(self.replay_buffer),
-                "train_step":  self.train_step,
+                "buffer_size":  len(self.replay_buffer),
+                "train_step":   self.train_step,
             }
             if self.logger:
                 self.logger.info(
                     f"[SAC] step:{self.train_step} "
-                    f"critic_loss:{results['critic_loss']} "
-                    f"actor_loss:{results['actor_loss']} "
-                    f"alpha_loss:{results['alpha_loss']} "
-                    f"entropy:{results['entropy']:.3f}/{results['target_entropy']:.3f} "
+                    f"total_loss:{results['total_loss']} "
+                    f"value_loss:{results['value_loss']} "
+                    f"policy_loss:{results['policy_loss']} "
+                    f"entropy_loss:{results['entropy_loss']:.3f}/{results['target_entropy']:.3f} "
                     f"alpha:{results['alpha']:.4f} "
                     f"buf:{results['buffer_size']}"
                 )

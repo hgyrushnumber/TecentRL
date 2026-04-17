@@ -44,12 +44,12 @@ class Config:
     TARGET_ENTROPY_RATIO = 0.6      # 目标熵 = ratio * log(ACTION_NUM) ≈ 1.38，平衡探索与利用
 
     # Soft target update / 软更新系数
-    TAU = 0.005
+    TAU = 0.01                      # 加快目标网络跟随速度（原0.005太慢，buffer轮换快时Q值严重滞后）
 
     # Replay buffer / 经验回放池
     REPLAY_BUFFER_SIZE = 20_000     # 缓冲区容量（约20局数据，自然淘汰旧策略，防止旧数据污染）
-    BATCH_SIZE = 256                # 每次训练采样批大小
-    LEARNING_STARTS = 1000          # 开始训练前先收集的样本数
+    BATCH_SIZE = 512                # 每次训练采样批大小（增大降低梯度方差，提升Q值估计稳定性）
+    LEARNING_STARTS = 5000          # 开始训练前先收集的样本数（Q值充分预热后再训Actor，防止早期发散）
 
     # ── 兼容性保留（部分接口仍会读取）────────────────────────────────
     LAMDA = 0.95
