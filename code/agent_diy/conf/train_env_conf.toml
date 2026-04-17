@@ -43,7 +43,7 @@ max_step = 1000
 # 训练启动时加载的预训练模型 id（对应 backup_model 目录下的 model.ckpt-{id}.pkl）。
 # 留空字符串 "" 表示从头训练；填写具体 id（如 "500" 或 "latest"）则在第一局加载该 checkpoint。
 # 后续训练仍按 "latest" 滚动更新，不影响正常训练流程。
-pretrain_model_id = ""
+pretrain_model_id = "0"
 
 [training_optimization]
 # Enhanced training parameters for improved performance
