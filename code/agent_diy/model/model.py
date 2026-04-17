@@ -33,18 +33,18 @@ def _make_fc(in_f, out_f, gain=1.0):
 def _build_mlp(input_dim, hidden_dim, mid_dim):
     """Shared MLP backbone with residual connection.
 
-    共享MLP骨干网络（含残差连接）。
+    共享MLP骨干网络（含残差连接，激活函数改为ELU，梯度更平滑）。
     """
     backbone = nn.Sequential(
         _make_fc(input_dim, hidden_dim),
         nn.LayerNorm(hidden_dim),
-        nn.ReLU(),
+        nn.ELU(),
         _make_fc(hidden_dim, hidden_dim),
         nn.LayerNorm(hidden_dim),
-        nn.ReLU(),
+        nn.ELU(),
         _make_fc(hidden_dim, mid_dim),
         nn.LayerNorm(mid_dim),
-        nn.ReLU(),
+        nn.ELU(),
     )
     skip = _make_fc(input_dim, mid_dim)
     return backbone, skip
@@ -62,7 +62,7 @@ class Actor(nn.Module):
         self.head = nn.Sequential(
             _make_fc(mid_dim, mid_dim),
             nn.LayerNorm(mid_dim),
-            nn.ReLU(),
+            nn.ELU(),
             _make_fc(mid_dim, action_num, gain=0.01),  # 小增益稳定初始输出
         )
 
@@ -87,6 +87,7 @@ class Critic(nn.Module):
     """SAC Critic: dual Q-networks Q1, Q2 outputting Q(s, a) for all actions.
 
     双Q网络：同时输出所有动作的Q值，取 min 减少过估计。
+    传入 legal_action 掩码，对非法动作 Q 值置为极小值，消除过估计偏差。
     """
 
     def __init__(self, input_dim, hidden_dim, mid_dim, action_num):
@@ -96,7 +97,7 @@ class Critic(nn.Module):
         self.head1 = nn.Sequential(
             _make_fc(mid_dim, mid_dim),
             nn.LayerNorm(mid_dim),
-            nn.ReLU(),
+            nn.ELU(),
             _make_fc(mid_dim, action_num),
         )
         # Q2 网络
@@ -104,22 +105,32 @@ class Critic(nn.Module):
         self.head2 = nn.Sequential(
             _make_fc(mid_dim, mid_dim),
             nn.LayerNorm(mid_dim),
-            nn.ReLU(),
+            nn.ELU(),
             _make_fc(mid_dim, action_num),
         )
 
-    def forward(self, obs):
-        """Return Q1(s,·) and Q2(s,·) for all actions."""
+    def forward(self, obs, legal_action=None):
+        """Return Q1(s,·) and Q2(s,·) for all actions.
+
+        若传入 legal_action，将非法动作 Q 值替换为 -1e9，消除过估计偏差。
+        """
         h1 = self.backbone1(obs) + self.skip1(obs)
         q1 = self.head1(h1)
         h2 = self.backbone2(obs) + self.skip2(obs)
         q2 = self.head2(h2)
+        if legal_action is not None:
+            mask = (1.0 - legal_action) * (-1e9)
+            q1 = q1 + mask
+            q2 = q2 + mask
         return q1, q2
 
-    def q1(self, obs):
+    def q1(self, obs, legal_action=None):
         """Return only Q1 (used in actor update)."""
         h1 = self.backbone1(obs) + self.skip1(obs)
-        return self.head1(h1)
+        q1 = self.head1(h1)
+        if legal_action is not None:
+            q1 = q1 + (1.0 - legal_action) * (-1e9)
+        return q1
 
     def set_train_mode(self):
         self.train()

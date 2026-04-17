@@ -82,7 +82,8 @@ class Preprocessor:
 
         buff_remain_norm = hero_feat[3]
 
-        # ── 怪物特征 (9D × 2) ────────────────────────────────────────────
+        # ── 怪物特征 (10D × 2) ───────────────────────────────────────────
+        # 相比原9D，新增方向角特征（sin/cos分解，替代原来孤立的vel_x/vel_z需要自行推断方向）
         monsters = frame_state.get("monsters", [])
         monster_feats = []
         cur_min_dist_norm = 1.0
@@ -119,6 +120,11 @@ class Preprocessor:
                 cr_norm = _norm(spd / max(raw_dist, 1.0), MAX_COLLISION_RISK)
                 max_collision_risk_norm = max(max_collision_risk_norm, cr_norm)
 
+                # 方向角：怪物相对英雄的角度（sin/cos 归一化到[-1,1]→[0,1]）
+                angle = np.arctan2(mz - hz, mx - hx)  # [-π, π]
+                dir_sin = (np.sin(angle) + 1.0) * 0.5  # [0, 1]
+                dir_cos = (np.cos(angle) + 1.0) * 0.5  # [0, 1]
+
                 monster_feats.append(np.array([
                     1.0,
                     _norm(mx, MAP_SIZE),
@@ -129,13 +135,15 @@ class Preprocessor:
                     _norm(vel_z, MAX_REL_VELOCITY),
                     pred_dist_norm,
                     cr_norm,
+                    dir_sin,   # 新增：方向角 sin
                 ], dtype=np.float32))
             else:
                 self.monster_prev_pos[i] = None
-                monster_feats.append(np.array([0., 0., 0., 0., 1., 0., 0., 1., 0.], dtype=np.float32))
+                monster_feats.append(np.array([0., 0., 0., 0., 1., 0., 0., 1., 0., 0.5], dtype=np.float32))
 
-        # ── 宝箱特征 (4D) ────────────────────────────────────────────────
-        treasure_feat = np.zeros(4, dtype=np.float32)
+        # ── 宝箱特征 (6D) ────────────────────────────────────────────────
+        # 相比原4D，新增方向向量(dx_norm, dz_norm)，模型无需自学位置差
+        treasure_feat = np.zeros(6, dtype=np.float32)
         try:
             treasures = frame_state.get("treasures", [])
             if treasures:
@@ -152,6 +160,11 @@ class Preprocessor:
                     treasure_feat[1] = _norm(tz, MAP_SIZE)
                     treasure_feat[2] = _norm(min_td, MAX_DIST)
                     treasure_feat[3] = _norm(len(treasures), 10.0)
+                    # 方向向量：归一化到 [0,1]（原始范围 [-1,1]）
+                    dx = (tx - hx) / max(min_td, 1e-6)
+                    dz = (tz - hz) / max(min_td, 1e-6)
+                    treasure_feat[4] = (dx + 1.0) * 0.5   # [0, 1]
+                    treasure_feat[5] = (dz + 1.0) * 0.5   # [0, 1]
         except Exception:
             pass
 
@@ -210,17 +223,17 @@ class Preprocessor:
             1.0 if self.step_no > self.max_step * 0.5 else 0.0,  # 后半段标志
         ], dtype=np.float32)
 
-        # ── 拼接特征 (61D) ───────────────────────────────────────────────
+        # ── 拼接特征 (65D) ───────────────────────────────────────────────
         feature = np.concatenate([
             hero_feat,           # 6
-            monster_feats[0],    # 9
-            monster_feats[1],    # 9
-            treasure_feat,       # 4
+            monster_feats[0],    # 10  (原9D + 方向角1D)
+            monster_feats[1],    # 10  (原9D + 方向角1D)
+            treasure_feat,       # 6   (原4D + 方向向量2D)
             buff_feat,           # 3
             map_feat,            # 16
             np.array(legal_action, dtype=np.float32),  # 10
             progress_feat,       # 4
-        ])  # total = 61
+        ])  # total = 65
 
         # ── 奖励计算 ─────────────────────────────────────────────────────
         progress_ratio = self.step_no / max(self.max_step, 1)
@@ -233,36 +246,39 @@ class Preprocessor:
         # 3. 碰撞风险惩罚（固定权重）
         risk_penalty = -0.03 * max_collision_risk_norm
 
-        # 4. 里程碑奖励（每50步均匀间隔，线性递增 0.05~0.20，信号密集稳定）
-        if self.step_no > 0 and self.step_no % 50 == 0:
-            milestone_reward = 0.05 + 0.15 * (self.step_no / self.max_step)
+        # 4. 里程碑奖励（每20步一次，减小初始值以减少噪声，让早期模型更快获得反馈）
+        if self.step_no > 0 and self.step_no % 20 == 0:
+            milestone_reward = 0.02 + 0.08 * (self.step_no / self.max_step)
         else:
             milestone_reward = 0.0
 
         # 5. 紧急避险奖励（已移除：模型会故意靠近怪物再逃跑来反复触发，导致策略不稳定）
 
         # 6. 宝箱收集奖励
-        # 任务得分：1个宝箱=100分=约67步；1步存活=0.02奖励
-        # 因此1个宝箱对应奖励 = 0.02 × 67 ≈ 1.34
+        # 直接用 env_info treasure_count 差值驱动，避免归一化精度损失
+        # 奖励值对齐任务分数比重：1个宝箱=100分，生存1000步约20分，故宝箱奖励≈5.0
         treasure_reward = 0.0
         try:
-            cur_tc = int(round(treasure_feat[3] * 10))
+            treasures_remain = len(frame_state.get("treasures", []))
             if self.last_treasure_count == -1:
-                self.last_treasure_count = cur_tc
-            elif cur_tc < self.last_treasure_count:
-                treasure_reward = 1.34 * (self.last_treasure_count - cur_tc)
-                self.last_treasure_count = cur_tc
+                self.last_treasure_count = treasures_remain
+            elif treasures_remain < self.last_treasure_count:
+                collected = self.last_treasure_count - treasures_remain
+                treasure_reward = 5.0 * collected
+                self.last_treasure_count = treasures_remain
+            else:
+                self.last_treasure_count = treasures_remain
         except Exception:
             pass
 
         # 7. 接近宝箱引导奖励
-        # 放宽触发距离 0.3→0.6（覆盖全图约50%范围），安全条件适度放宽至>0.3
+        # 收窄触发距离到 0.3（全图30%范围内），安全条件怪物距离>0.3
         # 奖励随距离线性衰减，越近越高
         treasure_proximity_reward = 0.0
         if treasure_feat[2] > 0.0 and cur_min_dist_norm > 0.3:
-            # 距离越近奖励越高，0.6以外不给，0.6以内线性插值到0.08
-            proximity_ratio = max(0.0, 1.0 - treasure_feat[2] / 0.6)
-            treasure_proximity_reward = 0.08 * proximity_ratio
+            # 距离越近奖励越高，0.3以外不给，0.3以内线性插值到0.06
+            proximity_ratio = max(0.0, 1.0 - treasure_feat[2] / 0.3)
+            treasure_proximity_reward = 0.06 * proximity_ratio
 
         # 8. Buff获取奖励（缩放到 0.2）
         buff_reward = 0.0

@@ -59,6 +59,18 @@ class Algorithm:
             self.critic.parameters(), lr=Config.INIT_LEARNING_RATE_START
         )
 
+        # 学习率余弦衰减调度器（从 LR_START 衰减到 LR_END）
+        self.actor_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.actor_optimizer,
+            T_max=Config.LR_DECAY_STEPS,
+            eta_min=Config.INIT_LEARNING_RATE_END,
+        )
+        self.critic_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.critic_optimizer,
+            T_max=Config.LR_DECAY_STEPS,
+            eta_min=Config.INIT_LEARNING_RATE_END,
+        )
+
         # 自动熵调整 α
         self.target_entropy = Config.TARGET_ENTROPY_RATIO * np.log(Config.ACTION_NUM)
         self.log_alpha = torch.zeros(1, requires_grad=True, device=device)
@@ -99,8 +111,9 @@ class Algorithm:
                 )
             return None
 
-        # 3. 执行梯度更新（上限64次，充分学习新数据经验）
-        n_updates = min(len(list_sample_data), 64)
+        # 3. 执行梯度更新（buffer越充实更新次数越多，最多128次）
+        buf_fill_ratio = min(len(self.replay_buffer) / Config.REPLAY_BUFFER_SIZE, 1.0)
+        n_updates = min(int(len(list_sample_data) * (1.0 + buf_fill_ratio)), 128)
         for _ in range(n_updates):
             batch = self.replay_buffer.sample(self.batch_size)
             self._update(batch)
@@ -122,6 +135,8 @@ class Algorithm:
             "buffer_size":  len(self.replay_buffer),
             "train_step":   self.train_step,
         }
+        # 返回后重置累积器，避免历史数据污染下一周期上报
+        self._loss_accum = {k: 0.0 for k in self._loss_accum}
         return results
 
     # ── SAC 单次梯度更新 ─────────────────────────────────────────────
@@ -138,13 +153,13 @@ class Algorithm:
         with torch.no_grad():
             next_probs = self.actor(next_obs, next_legal)               # (B, A)
             next_log_p = torch.log(next_probs.clamp(1e-9))
-            q1_t, q2_t = self.critic_target(next_obs)
+            q1_t, q2_t = self.critic_target(next_obs, next_legal)
             min_q_t = torch.min(q1_t, q2_t)
             # 软贝尔曼目标 V(s') = Σ_a π * (Q - α*logπ)
             v_next = (next_probs * (min_q_t - self.alpha * next_log_p)).sum(1, keepdim=True)
             target_q = rew + self.gamma * (1.0 - done) * v_next
 
-        q1_all, q2_all = self.critic(obs)
+        q1_all, q2_all = self.critic(obs, legal)
         q1 = q1_all.gather(1, act.unsqueeze(1))
         q2 = q2_all.gather(1, act.unsqueeze(1))
         critic_loss = F.mse_loss(q1, target_q) + F.mse_loss(q2, target_q)
@@ -158,7 +173,7 @@ class Algorithm:
         probs = self.actor(obs, legal)
         log_p = torch.log(probs.clamp(1e-9))
         with torch.no_grad():
-            q1_pi, q2_pi = self.critic(obs)
+            q1_pi, q2_pi = self.critic(obs, legal)
             min_q_pi = torch.min(q1_pi, q2_pi)
         actor_loss = (probs * (self.alpha * log_p - min_q_pi)).sum(1).mean()
 
@@ -179,6 +194,11 @@ class Algorithm:
         # ── 软更新目标网络 ────────────────────────────────────────────
         for p_o, p_t in zip(self.critic.parameters(), self.critic_target.parameters()):
             p_t.data.mul_(1.0 - self.tau).add_(self.tau * p_o.data)
+
+        # ── 学习率调度步进 ────────────────────────────────────────────
+        if self.train_step < Config.LR_DECAY_STEPS:
+            self.actor_scheduler.step()
+            self.critic_scheduler.step()
 
         self.train_step += 1
 
