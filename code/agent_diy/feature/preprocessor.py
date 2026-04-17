@@ -235,11 +235,11 @@ class Preprocessor:
         # 3. 碰撞风险惩罚（固定权重）
         risk_penalty = -0.03 * max_collision_risk_norm
 
-        # 4. 里程碑奖励（统一缩放至 0.05~0.3，与存活奖励同量级）
-        _milestones = {50: 0.05, 100: 0.08, 150: 0.10, 200: 0.12,
-                       300: 0.15, 400: 0.18, 500: 0.20, 600: 0.22,
-                       750: 0.25, 900: 0.28, 1000: 0.30}
-        milestone_reward = _milestones.get(self.step_no, 0.0)
+        # 4. 里程碑奖励（每50步均匀间隔，线性递增 0.05~0.20，信号密集稳定）
+        if self.step_no > 0 and self.step_no % 50 == 0:
+            milestone_reward = 0.05 + 0.15 * (self.step_no / self.max_step)
+        else:
+            milestone_reward = 0.0
 
         # 5. 紧急避险奖励
         avoidance_reward = 0.0
@@ -259,9 +259,9 @@ class Preprocessor:
         except Exception:
             pass
 
-        # 7. 接近宝箱奖励（保持不变，量级已合理）
+        # 7. 接近宝箱奖励（安全条件：怪物距离>0.4时才引导，避免与risk_penalty冲突）
         treasure_proximity_reward = 0.0
-        if 0.0 < treasure_feat[2] < 0.3:
+        if 0.0 < treasure_feat[2] < 0.3 and cur_min_dist_norm > 0.4:
             treasure_proximity_reward = 0.05 * (1.0 - treasure_feat[2])
 
         # 8. Buff获取奖励（缩放到 0.2）
@@ -271,9 +271,9 @@ class Preprocessor:
             buff_reward = 0.2
         self.last_buff_active = cur_buff_active
 
-        # 9. 接近Buff奖励（保持不变，量级已合理）
+        # 9. 接近Buff奖励（安全条件：怪物距离>0.4时才引导，避免与risk_penalty冲突）
         buff_proximity_reward = 0.0
-        if 0.0 < buff_feat[2] < 0.3:
+        if 0.0 < buff_feat[2] < 0.3 and cur_min_dist_norm > 0.4:
             buff_proximity_reward = 0.03 * (1.0 - buff_feat[2])
 
         # 10. 移动探索奖励

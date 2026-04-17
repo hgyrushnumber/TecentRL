@@ -41,7 +41,7 @@ class Config:
     # target_entropy = -log(1/|A|) * 0.98（接近均匀分布熵的98%）
     AUTO_ALPHA = True
     ALPHA_LR = 3e-4
-    TARGET_ENTROPY_RATIO = 0.98     # 目标熵 = ratio * log(ACTION_NUM)
+    TARGET_ENTROPY_RATIO = 0.6      # 目标熵 = ratio * log(ACTION_NUM) ≈ 1.38，平衡探索与利用
 
     # Soft target update / 软更新系数
     TAU = 0.005
