@@ -66,6 +66,12 @@ class EpisodeRunner:
         self.last_report_monitor_time = 0
         self.last_get_training_metrics_time = 0
 
+        # 预训练模型 id：第一局用指定 id 加载，之后改为 "latest"
+        self._pretrain_model_id = str(
+            usr_conf.get("pretrain_model_id", "")
+        ).strip()
+        self._pretrain_loaded = False   # 标记是否已完成首局加载
+
     def run_episodes(self):
         """Collect one episode and yield SampleData list.
 
@@ -86,7 +92,16 @@ class EpisodeRunner:
 
             # 重置 Agent，拉取最新模型
             self.agent.reset(env_obs)
-            self.agent.load_model(id="latest")
+
+            # 第一局：若配置了 pretrain_model_id，优先加载该 checkpoint
+            if not self._pretrain_loaded and self._pretrain_model_id:
+                self.logger.info(
+                    f"[Pretrain] Loading pretrained model id='{self._pretrain_model_id}'"
+                )
+                self.agent.load_model(id=self._pretrain_model_id)
+                self._pretrain_loaded = True
+            else:
+                self.agent.load_model(id="latest")
 
             obs_data, remain_info = self.agent.observation_process(env_obs)
 
