@@ -56,6 +56,54 @@ class Agent(BaseAgent):
         self.monitor = monitor
         super().__init__(agent_type, device, logger, monitor)
 
+        # Learner 启动时尝试加载上次保存的 latest checkpoint，实现断点续训
+        self._try_resume()
+
+    # ── Learner 启动断点续训（自动加载 latest checkpoint）────────────
+    def _try_resume(self):
+        """尝试从 latest checkpoint 恢复训练状态。
+
+        框架在 Learner 进程初始化 Agent 时调用（__init__ 末尾）。
+        文件不存在时静默跳过，从头开始训练。
+        """
+        # 框架将模型目录注入到 BaseAgent，尝试读取该路径
+        path = getattr(self, "model_file_path", None)
+        if path is None:
+            if self.logger:
+                self.logger.info("[SAC] _try_resume: model_file_path not set, skip resume")
+            return
+
+        model_file = f"{path}/model.ckpt-latest.pkl"
+        if not os.path.exists(model_file):
+            if self.logger:
+                self.logger.info(
+                    f"[SAC] _try_resume: no latest checkpoint at {model_file}, "
+                    f"Learner starts from scratch"
+                )
+            return
+
+        # 文件存在，执行加载
+        file_size_kb = os.path.getsize(model_file) // 1024
+        self.load_model(path=path, id="latest")
+
+        # 加载后输出验证日志
+        if self.logger:
+            first_param = next(self.model.parameters())
+            param_mean = first_param.data.mean().item()
+            param_std  = first_param.data.std().item()
+            self.logger.info(
+                f"[SAC] _try_resume: Learner resumed from {model_file} "
+                f"(size={file_size_kb}KB) | "
+                f"train_step={self.algorithm.train_step} "
+                f"alpha={self.algorithm.alpha:.4f} "
+                f"actor_param_mean={param_mean:.4f} std={param_std:.4f}"
+            )
+            if self.algorithm.train_step == 0:
+                self.logger.warning(
+                    "[SAC] _try_resume: train_step=0 after loading, "
+                    "checkpoint may be from a very early save or corrupted"
+                )
+
     # ── 每局重置（Actor 侧）──────────────────────────────────────────
     def reset(self, env_obs=None):
         self.preprocessor.reset()
@@ -148,6 +196,12 @@ class Agent(BaseAgent):
             {k: v.clone().cpu() for k, v in self.critic.state_dict().items()},
             critic_file,
         )
+        # Critic Target 权重（软更新的滞后版本，必须单独保存，不能用 critic 替代）
+        critic_target_file = f"{path}/critic_target.ckpt-{id}.pkl"
+        torch.save(
+            {k: v.clone().cpu() for k, v in self.algorithm.critic_target.state_dict().items()},
+            critic_target_file,
+        )
         # 完整训练状态（优化器 + log_alpha + train_step，断点续训必需）
         train_state_file = f"{path}/train_state.ckpt-{id}.pkl"
         torch.save(
@@ -187,15 +241,31 @@ class Agent(BaseAgent):
                 self.logger.warning(f"[SAC] load actor failed: {e}, training from scratch")
             return
 
-        # 尝试加载 Critic + 完整训练状态（Learner 侧断点续训）
+        # 尝试加载 Critic 权重（Learner 侧断点续训）
         critic_file = f"{path}/critic.ckpt-{id}.pkl"
         try:
             self.critic.load_state_dict(
                 torch.load(critic_file, map_location=self.device)
             )
-            self.algorithm.critic_target.load_state_dict(self.critic.state_dict())
         except (FileNotFoundError, Exception):
             pass
+
+        # 加载 critic_target（软更新的滞后快照，必须从独立文件恢复，不能用 critic 替代）
+        critic_target_file = f"{path}/critic_target.ckpt-{id}.pkl"
+        try:
+            self.algorithm.critic_target.load_state_dict(
+                torch.load(critic_target_file, map_location=self.device)
+            )
+        except FileNotFoundError:
+            # 旧版 checkpoint 没有 critic_target 文件，退而用 critic 初始化
+            self.algorithm.critic_target.load_state_dict(self.critic.state_dict())
+            if self.logger:
+                self.logger.warning(
+                    f"[SAC] no critic_target checkpoint, initialized from critic"
+                )
+        except Exception as e:
+            if self.logger:
+                self.logger.warning(f"[SAC] load critic_target failed: {e}")
 
         # 恢复优化器状态（断点续训核心，Actor侧文件可能不存在则跳过）
         train_state_file = f"{path}/train_state.ckpt-{id}.pkl"
