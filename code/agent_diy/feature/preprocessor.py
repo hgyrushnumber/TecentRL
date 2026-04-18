@@ -288,8 +288,8 @@ class Preprocessor:
             danger_level = (0.25 - cur_min_dist_norm) / 0.25
             risk_penalty = -0.5 * (danger_level ** 2)  # 降低惩罚强度
 
-        # === 2. 存活奖励（极弱，仅防原地等死）===
-        survival_reward = 0.01  # 一局1000步累积+1，远小于1个宝箱
+        # === 2. 存活奖励（提升权重，平衡稀疏奖励）===
+        survival_reward = 1.0  # 一局1000步累积+100，与宝箱奖励量级相当
 
         # === 3. 宝箱收集（主信号，大幅提升）===
         treasure_reward = 0.0
