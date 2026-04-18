@@ -38,8 +38,8 @@ class Agent(BaseAgent):
         self.device = device
 
         input_dim = Config.DIM_OF_OBSERVATION
-        hidden_dim = 256
-        mid_dim = 128
+        hidden_dim = 512   # 增大隐藏层（原256），提升复杂空间感知能力
+        mid_dim = 256      # 增大中间层（原128），匹配102维输入+49维地图特征
         action_num = Config.ACTION_NUM
 
         # Actor 网络（Actor/Learner 进程均持有，Actor 侧只做推理）

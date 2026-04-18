@@ -34,24 +34,24 @@ class Config:
 
     # ── SAC 超参数 ─────────────────────────────────────────────────────
     GAMMA = 0.99                    # 折扣因子
-    INIT_LEARNING_RATE_START = 5e-4 # Actor / Critic 学习率（提升）
-    INIT_LEARNING_RATE_END = 1e-5   # 学习率衰减终点（降低）
-    LR_DECAY_STEPS = 200_000        # 学习率衰减步数（延长至200k）
-    GRAD_CLIP_RANGE = 1.0           # 梯度裁剪（放宽）
+    INIT_LEARNING_RATE_START = 3e-4 # Actor / Critic 学习率（降低，防止Critic震荡）
+    INIT_LEARNING_RATE_END = 1e-5   # 学习率衰减终点
+    LR_DECAY_STEPS = 500_000        # 学习率衰减步数（延长至500k，复杂任务需要更长时间）
+    GRAD_CLIP_RANGE = 1.0           # 梯度裁剪
 
     # 自动熵调整 (auto-alpha tuning)
     # target_entropy = ratio * log(|A|)，平衡探索与利用
     AUTO_ALPHA = True
     ALPHA_LR = 3e-4
-    TARGET_ENTROPY_RATIO = 0.5      # 降低到0.5，减少初期无效探索
+    TARGET_ENTROPY_RATIO = 0.7      # 提升至0.7，增强探索，避免过早陷入局部最优
 
     # Soft target update / 软更新系数
-    TAU = 0.005                     # 回调至0.005，目标网络更新更稳定
+    TAU = 0.005                     # 目标网络软更新系数
 
     # Replay buffer / 经验回放池
-    REPLAY_BUFFER_SIZE = 50_000     # 扩大缓冲区至50k，提升样本多样性
-    BATCH_SIZE = 512                # 降低批大小，提升更新频率
-    LEARNING_STARTS = 10_000        # 提升预热阈值至10k，确保样本多样性
+    REPLAY_BUFFER_SIZE = 50_000     # 经验回放池容量
+    BATCH_SIZE = 512                # 批大小
+    LEARNING_STARTS = 2_000         # 降低预热阈值至2k，加快早期学习启动
 
     # ── 优先经验回放（PER）────────────────────────────────────────────
     PER_ALPHA = 0.6                 # 优先级指数（0=均匀采样，1=完全优先级）

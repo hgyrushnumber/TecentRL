@@ -295,31 +295,35 @@ class Preprocessor:
         except Exception:
             pass
 
-        # === 核心2: 危险惩罚（动态，仅在真正危险时触发） ===
+        # === 核心2: 危险惩罚（动态，触发阈值扩大至0.25，让模型更早感知威胁） ===
         # 设计原则：距离越近，惩罚指数增长，给模型明确的学习信号
         risk_penalty = 0.0
-        if cur_min_dist_norm < 0.15:  # 仅在距离<0.15（约27格）时惩罚
-            # 指数惩罚：距离0.15→-0.5, 距离0.05→-5.0
-            danger_level = (0.15 - cur_min_dist_norm) / 0.15
+        if cur_min_dist_norm < 0.25:  # 扩大至距离<0.25（约46格）时触发
+            # 指数惩罚：距离0.25→-0.2, 距离0.05→-5.0
+            danger_level = (0.25 - cur_min_dist_norm) / 0.25
             risk_penalty = -0.5 * (danger_level ** 2) * 20  # 最高-5.0
-        
-        # === 核心3: 弱引导信号（帮助早期学习，但不足以主导策略） ===
-        # 宝箱方向引导（仅在安全时）
+
+        # === 核心3: 方向引导信号（加强，帮助早期学习宝箱收集策略） ===
+        # 宝箱方向引导（仅在相对安全时才引导，避免冒险冲宝箱）
         treasure_guide = 0.0
-        if treasure_feat[2] > 0.0 and cur_min_dist_norm > 0.25:  # 安全时才引导
-            # 向宝箱移动给小奖励，但远小于收集奖励
+        if treasure_feat[2] > 0.0 and cur_min_dist_norm > 0.20:  # 安全距离放宽至0.20
             cur_td = treasure_feat[2]
             if self.last_treasure_dist_norm >= 0.0:
                 dist_delta = self.last_treasure_dist_norm - cur_td
                 if dist_delta > 0:
-                    treasure_guide = 0.1 * dist_delta  # 每步最多0.1分（收集=50分）
+                    treasure_guide = 0.4 * dist_delta  # 加强至0.4（原0.1），更有效引导早期探索
         self.last_treasure_dist_norm = treasure_feat[2] if treasure_feat[2] > 0.0 else -1.0
+
+        # === 核心4: 存活奖励（微弱，鼓励持续探索而非原地等待） ===
+        # 每步+0.01，一局1000步最多累积10分，远小于收集宝箱（50分）
+        # 但足以让模型学会「活着才有收集宝箱的机会」
+        survival_reward = 0.01
 
         # 更新状态
         self.last_min_monster_dist_norm = cur_min_dist_norm
 
         # === 奖励汇总 ===
-        # 权重设计：确保收集宝箱 >> 引导信号 > 噪声
-        total_reward = treasure_reward + risk_penalty + treasure_guide
+        # 权重设计：确保收集宝箱(50) >> 引导信号(0.4) > 存活(0.01) > 噪声
+        total_reward = treasure_reward + risk_penalty + treasure_guide + survival_reward
 
         return feature, legal_action, [total_reward]
