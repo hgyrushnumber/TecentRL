@@ -93,6 +93,7 @@ def _remove_checkpoint(agent, old_id, logger):
         suffixes = [
             f"model.ckpt-{old_id}.pkl",
             f"critic.ckpt-{old_id}.pkl",
+            f"critic_target.ckpt-{old_id}.pkl",
             f"train_state.ckpt-{old_id}.pkl",
         ]
         for name in suffixes:
