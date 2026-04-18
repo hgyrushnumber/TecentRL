@@ -82,6 +82,16 @@ class Agent(BaseAgent):
         with torch.no_grad():
             probs = self.model(obs_t, la_t)[0].cpu().numpy()  # (A,)
 
+        # ε-greedy 探索：训练早期10%随机探索，防止过早收敛
+        if np.random.random() < 0.1:
+            legal_actions = np.where(np.array(legal_action[:8]) == 1)[0]  # 只考虑移动动作
+            if len(legal_actions) > 0:
+                action = int(np.random.choice(legal_actions))
+                d_action = int(np.argmax(probs))
+                probs_out = np.zeros(10, dtype=np.float32)
+                probs_out[action] = 1.0
+                return [ActData(action=[action], d_action=[d_action], prob=list(probs_out), value=[0.0])]
+
         # 随机采样（探索）
         probs = np.clip(probs, 1e-9, None)
         probs /= probs.sum()

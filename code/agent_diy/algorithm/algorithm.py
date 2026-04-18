@@ -250,7 +250,7 @@ class Algorithm:
         self.alpha_optimizer.zero_grad()
         self.scaler.scale(alpha_loss).backward()
         self.scaler.step(self.alpha_optimizer)
-        self.alpha = self.log_alpha.exp().clamp(1e-4, 3.0).item()
+        self.alpha = self.log_alpha.exp().clamp(0.2, 3.0).item()  # 增大下限至0.2，防止熵过早衰减
 
         # 更新梯度缩放器
         self.scaler.update()
@@ -384,7 +384,7 @@ class Algorithm:
             # 恢复 log_alpha（可训练参数，需要特殊处理）
             with torch.no_grad():
                 self.log_alpha.fill_(state["log_alpha"])
-            self.alpha = self.log_alpha.exp().clamp(1e-4, 3.0).item()
+            self.alpha = self.log_alpha.exp().clamp(0.2, 3.0).item()  # 增大下限至0.2，防止熵过早衰减
             self.train_step = state.get("train_step", 0)
             if self.logger:
                 self.logger.info(

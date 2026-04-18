@@ -286,10 +286,10 @@ class Preprocessor:
         risk_penalty = 0.0
         if cur_min_dist_norm < 0.25:
             danger_level = (0.25 - cur_min_dist_norm) / 0.25
-            risk_penalty = -1.0 * (danger_level ** 2)
+            risk_penalty = -0.5 * (danger_level ** 2)  # 降低惩罚强度
 
         # === 2. 存活奖励（极弱，仅防原地等死）===
-        survival_reward = 0.05  # 一局1000步累积+5，远小于1个宝箱
+        survival_reward = 0.01  # 一局1000步累积+1，远小于1个宝箱
 
         # === 3. 宝箱收集（主信号，大幅提升）===
         treasure_reward = 0.0
@@ -299,7 +299,7 @@ class Preprocessor:
                 self.last_treasure_count = treasures_remain
             elif treasures_remain < self.last_treasure_count:
                 collected = self.last_treasure_count - treasures_remain
-                treasure_reward = 200.0 * collected  # 主信号：+20/个（缩放后）
+                treasure_reward = 500.0 * collected  # 主信号：+50/个（缩放后）
                 self.last_treasure_count = treasures_remain
             else:
                 self.last_treasure_count = treasures_remain

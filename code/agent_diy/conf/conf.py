@@ -34,16 +34,16 @@ class Config:
 
     # ── SAC 超参数 ─────────────────────────────────────────────────────
     GAMMA = 0.99                    # 折扣因子
-    INIT_LEARNING_RATE_START = 3e-4 # Actor / Critic 学习率（降低，防止Critic震荡）
+    INIT_LEARNING_RATE_START = 1e-4 # Actor / Critic 学习率（降低，延缓收敛）
     INIT_LEARNING_RATE_END = 1e-5   # 学习率衰减终点
-    LR_DECAY_STEPS = 500_000        # 学习率衰减步数（延长至500k，复杂任务需要更长时间）
+    LR_DECAY_STEPS = 1_000_000      # 学习率衰减步数（延长至1M，防止过早收敛）
     GRAD_CLIP_RANGE = 1.0           # 梯度裁剪
 
     # 自动熵调整 (auto-alpha tuning)
     # target_entropy = ratio * log(|A|)，平衡探索与利用
     AUTO_ALPHA = True
     ALPHA_LR = 3e-4
-    TARGET_ENTROPY_RATIO = 0.98    # 目标熵接近均匀分布，最大化探索压力
+    TARGET_ENTROPY_RATIO = 0.5     # 降低目标熵，避免无效探索
 
     # Soft target update / 软更新系数
     TAU = 0.005                     # 目标网络软更新系数
@@ -51,7 +51,7 @@ class Config:
     # Replay buffer / 经验回放池
     REPLAY_BUFFER_SIZE = 50_000     # 经验回放池容量
     BATCH_SIZE = 1024               # 批大小（提升至1024，更稳定的梯度估计）
-    LEARNING_STARTS = 2_000         # 降低预热阈值至2k，加快早期学习启动
+    LEARNING_STARTS = 10_000        # 增大预热阈值至10k，收集更多多样化样本
 
     # ── 优先经验回放（PER）────────────────────────────────────────────
     PER_ALPHA = 0.3                 # 优先级指数（降低，增加采样多样性）
