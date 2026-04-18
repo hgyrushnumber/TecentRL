@@ -50,7 +50,7 @@ class Config:
 
     # Replay buffer / 经验回放池
     REPLAY_BUFFER_SIZE = 50_000     # 经验回放池容量
-    BATCH_SIZE = 512                # 批大小
+    BATCH_SIZE = 1024               # 批大小（提升至1024，更稳定的梯度估计）
     LEARNING_STARTS = 2_000         # 降低预热阈值至2k，加快早期学习启动
 
     # ── 优先经验回放（PER）────────────────────────────────────────────
