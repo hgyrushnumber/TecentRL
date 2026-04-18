@@ -266,21 +266,45 @@ class Preprocessor:
             progress_feat,       # 4
         ])  # total = 102
 
-        # ── 奖励计算（简化版：仅保留核心信号）──────────────────────────
-        # 
-        # 问题诊断：原奖励设计存在致命缺陷
-        # 1. 奖励项过多（11项）→ 噪声淹没信号
-        # 2. 宝箱接近奖励累积200分 vs 收集仅5分 → 模型绕圈刷奖励
-        # 3. 存活奖励累积40分 → 模型原地不动
-        # 
-        # 修复策略：简化为3个核心奖励
-        # 1. 宝箱收集（稀疏、高价值） - 主要目标
-        # 2. 危险惩罚（即时反馈） - 避免死亡
-        # 3. 终局奖励（胜负信号） - 长期目标
+        # ── 奖励设计（优先级分层 + Reward Scaling）──────────────────────
+        #
+        # 设计哲学：存活是第一要素，活着才有机会拿分；安全时才去收宝箱。
+        #
+        # 优先级层次（信号强度递减）：
+        #   P1. 存活惩罚（危险靠近）  → 最强负信号，绝对优先
+        #   P2. 存活奖励（持续活着）  → 持续正信号，鼓励不被抓
+        #   P3. 宝箱收集              → 高价值稀疏奖励，安全前提下的目标
+        #   P4. 宝箱方向引导          → 仅在安全时生效，辅助早期探索
+        #
+        # Reward Scaling 设计原则：
+        #   所有奖励项经过统一缩放后送入 SAC，目标是将每步奖励控制在 [-1, 1] 附近，
+        #   防止大幅奖励冲击（如宝箱+50）导致 Critic Q 值发散。
+        #   缩放因子 REWARD_SCALE = 0.1，缩放后各项量级：
+        #     - 危险惩罚: 最高 -0.5/步（P1，主导信号）
+        #     - 存活奖励: +0.1/步（P2，一局1000步累积 +100 原始 → 缩放后 +10）
+        #     - 宝箱收集: +5.0/个（P3，稀疏高价值）
+        #     - 方向引导: 最高 ~+0.05/步（P4，辅助）
         # ────────────────────────────────────────────────────────────────
+        REWARD_SCALE = 0.1   # 统一缩放因子，控制 Q 值量级
 
-        # === 核心1: 宝箱收集奖励（大幅提升） ===
-        # 原值: 5.0 → 新值: 50.0（提升10倍，确保是主导信号）
+        # === P1: 危险惩罚（存活第一要素，越近惩罚越重）===
+        # 阈值 0.30（约55格）：给模型足够的预警窗口
+        # 指数惩罚确保越靠近惩罚越陡，强迫模型主动远离
+        risk_penalty = 0.0
+        if cur_min_dist_norm < 0.30:
+            danger_level = (0.30 - cur_min_dist_norm) / 0.30  # [0, 1]
+            # 平方指数：边界处约 -0.05，极近处约 -5.0（原始值）
+            risk_penalty = -5.0 * (danger_level ** 2)
+
+        # === P2: 存活奖励（活着本身就有价值）===
+        # 每步给予正奖励，但仅在"相对安全"时给满额
+        # 危险区（dist < 0.30）时减半，给模型「危险中存活价值更低」的信号
+        if cur_min_dist_norm >= 0.30:
+            survival_reward = 1.0   # 安全区：满额存活奖励
+        else:
+            survival_reward = 0.3   # 危险区：减半，避免危险区「赖着不走」
+
+        # === P3: 宝箱收集奖励（安全前提下的主要得分目标）===
         treasure_reward = 0.0
         try:
             treasures_remain = len(frame_state.get("treasures", []))
@@ -288,42 +312,36 @@ class Preprocessor:
                 self.last_treasure_count = treasures_remain
             elif treasures_remain < self.last_treasure_count:
                 collected = self.last_treasure_count - treasures_remain
-                treasure_reward = 50.0 * collected  # 提升至50分/个
+                treasure_reward = 50.0 * collected   # 每个宝箱 +50（原始），缩放后 +5.0
                 self.last_treasure_count = treasures_remain
             else:
                 self.last_treasure_count = treasures_remain
         except Exception:
             pass
 
-        # === 核心2: 危险惩罚（动态，触发阈值扩大至0.25，让模型更早感知威胁） ===
-        # 设计原则：距离越近，惩罚指数增长，给模型明确的学习信号
-        risk_penalty = 0.0
-        if cur_min_dist_norm < 0.25:  # 扩大至距离<0.25（约46格）时触发
-            # 指数惩罚：距离0.25→-0.2, 距离0.05→-5.0
-            danger_level = (0.25 - cur_min_dist_norm) / 0.25
-            risk_penalty = -0.5 * (danger_level ** 2) * 20  # 最高-5.0
-
-        # === 核心3: 方向引导信号（加强，帮助早期学习宝箱收集策略） ===
-        # 宝箱方向引导（仅在相对安全时才引导，避免冒险冲宝箱）
+        # === P4: 宝箱方向引导（仅在安全区生效，不与P1冲突）===
+        # 触发条件严格限定在安全区（dist > 0.30），彻底消除冲突区间
         treasure_guide = 0.0
-        if treasure_feat[2] > 0.0 and cur_min_dist_norm > 0.20:  # 安全距离放宽至0.20
+        if treasure_feat[2] > 0.0 and cur_min_dist_norm > 0.30:
             cur_td = treasure_feat[2]
             if self.last_treasure_dist_norm >= 0.0:
                 dist_delta = self.last_treasure_dist_norm - cur_td
                 if dist_delta > 0:
-                    treasure_guide = 0.4 * dist_delta  # 加强至0.4（原0.1），更有效引导早期探索
+                    # 原始约每步 +0.001~0.005，缩放后约 +0.0001~0.0005
+                    # 乘以5.0提升引导强度，缩放后约 +0.0005~0.0025/步
+                    treasure_guide = 5.0 * dist_delta
         self.last_treasure_dist_norm = treasure_feat[2] if treasure_feat[2] > 0.0 else -1.0
-
-        # === 核心4: 存活奖励（微弱，鼓励持续探索而非原地等待） ===
-        # 每步+0.01，一局1000步最多累积10分，远小于收集宝箱（50分）
-        # 但足以让模型学会「活着才有收集宝箱的机会」
-        survival_reward = 0.01
 
         # 更新状态
         self.last_min_monster_dist_norm = cur_min_dist_norm
 
-        # === 奖励汇总 ===
-        # 权重设计：确保收集宝箱(50) >> 引导信号(0.4) > 存活(0.01) > 噪声
-        total_reward = treasure_reward + risk_penalty + treasure_guide + survival_reward
+        # === 奖励汇总 + Reward Scaling ===
+        # 原始奖励各项量级：
+        #   risk_penalty: [-5.0, 0]   survival: [0.3, 1.0]
+        #   treasure: [0, 50]          guide: [0, ~0.025]
+        # 统一乘以 REWARD_SCALE=0.1，缩放后：
+        #   risk: [-0.5, 0]  survival: [0.03, 0.1]  treasure: [0, 5.0]  guide: [0, ~0.0025]
+        raw_reward = risk_penalty + survival_reward + treasure_reward + treasure_guide
+        total_reward = raw_reward * REWARD_SCALE
 
         return feature, legal_action, [total_reward]
