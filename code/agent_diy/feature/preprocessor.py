@@ -289,22 +289,15 @@ class Preprocessor:
 
         # === P1: 危险惩罚（存活第一要素，越近惩罚越重）===
         # 阈值 0.30（约55格）：给模型足够的预警窗口
-        # 指数惩罚确保越靠近惩罚越陡，强迫模型主动远离
         risk_penalty = 0.0
         if cur_min_dist_norm < 0.30:
             danger_level = (0.30 - cur_min_dist_norm) / 0.30  # [0, 1]
-            # 平方指数：边界处约 -0.05，极近处约 -5.0（原始值）
-            risk_penalty = -5.0 * (danger_level ** 2)
+            risk_penalty = -2.0 * (danger_level ** 2)
 
-        # === P2: 存活奖励（活着本身就有价值）===
-        # 每步给予正奖励，但仅在"相对安全"时给满额
-        # 危险区（dist < 0.30）时减半，给模型「危险中存活价值更低」的信号
-        if cur_min_dist_norm >= 0.30:
-            survival_reward = 1.0   # 安全区：满额存活奖励
-        else:
-            survival_reward = 0.3   # 危险区：减半，避免危险区「赖着不走」
+        # === P2: 存活奖励（每步固定，不区分安全区/危险区）===
+        survival_reward = 0.5
 
-        # === P3: 宝箱收集奖励（安全前提下的主要得分目标）===
+        # === P3: 宝箱收集奖励===
         treasure_reward = 0.0
         try:
             treasures_remain = len(frame_state.get("treasures", []))
@@ -312,7 +305,7 @@ class Preprocessor:
                 self.last_treasure_count = treasures_remain
             elif treasures_remain < self.last_treasure_count:
                 collected = self.last_treasure_count - treasures_remain
-                treasure_reward = 50.0 * collected   # 每个宝箱 +50（原始），缩放后 +5.0
+                treasure_reward = 100.0 * collected
                 self.last_treasure_count = treasures_remain
             else:
                 self.last_treasure_count = treasures_remain
@@ -320,16 +313,13 @@ class Preprocessor:
             pass
 
         # === P4: 宝箱方向引导（仅在安全区生效，不与P1冲突）===
-        # 触发条件严格限定在安全区（dist > 0.30），彻底消除冲突区间
         treasure_guide = 0.0
         if treasure_feat[2] > 0.0 and cur_min_dist_norm > 0.30:
             cur_td = treasure_feat[2]
             if self.last_treasure_dist_norm >= 0.0:
                 dist_delta = self.last_treasure_dist_norm - cur_td
                 if dist_delta > 0:
-                    # 原始约每步 +0.001~0.005，缩放后约 +0.0001~0.0005
-                    # 乘以5.0提升引导强度，缩放后约 +0.0005~0.0025/步
-                    treasure_guide = 5.0 * dist_delta
+                    treasure_guide = 50.0 * dist_delta
         self.last_treasure_dist_norm = treasure_feat[2] if treasure_feat[2] > 0.0 else -1.0
 
         # 更新状态
@@ -337,10 +327,10 @@ class Preprocessor:
 
         # === 奖励汇总 + Reward Scaling ===
         # 原始奖励各项量级：
-        #   risk_penalty: [-5.0, 0]   survival: [0.3, 1.0]
-        #   treasure: [0, 50]          guide: [0, ~0.025]
+        #   risk_penalty: [-2.0, 0]   survival: 0.5/步
+        #   treasure: [0, 100]         guide: 50×Δdist
         # 统一乘以 REWARD_SCALE=0.1，缩放后：
-        #   risk: [-0.5, 0]  survival: [0.03, 0.1]  treasure: [0, 5.0]  guide: [0, ~0.0025]
+        #   risk: [-0.2, 0]  survival: +0.05/步  treasure: +10/个  guide: 5×Δdist
         raw_reward = risk_penalty + survival_reward + treasure_reward + treasure_guide
         total_reward = raw_reward * REWARD_SCALE
 
