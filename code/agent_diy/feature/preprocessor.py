@@ -266,39 +266,21 @@ class Preprocessor:
             progress_feat,       # 4
         ])  # total = 102
 
-        # ── 奖励计算 ─────────────────────────────────────────────────────
-        progress_ratio = self.step_no / max(self.max_step, 1)
+        # ── 奖励计算（简化版：仅保留核心信号）──────────────────────────
+        # 
+        # 问题诊断：原奖励设计存在致命缺陷
+        # 1. 奖励项过多（11项）→ 噪声淹没信号
+        # 2. 宝箱接近奖励累积200分 vs 收集仅5分 → 模型绕圈刷奖励
+        # 3. 存活奖励累积40分 → 模型原地不动
+        # 
+        # 修复策略：简化为3个核心奖励
+        # 1. 宝箱收集（稀疏、高价值） - 主要目标
+        # 2. 危险惩罚（即时反馈） - 避免死亡
+        # 3. 终局奖励（胜负信号） - 长期目标
+        # ────────────────────────────────────────────────────────────────
 
-        # 1. 基础存活奖励（动态）
-        survive_reward = 0.02 * (1.0 + progress_ratio)
-
-        # 2. 逃脱成功正奖励（修复：原版已移除导致仅靠负惩罚驱动逃跑，效率低）
-        # 与原"dist_delta"不同：只在怪物真正危险时（上一步距离 < 0.3）才给奖励，
-        # 避免模型在安全距离反复震荡来刷奖励
-        escape_reward = 0.0
-        if self.last_min_monster_dist_norm < 0.3 and cur_min_dist_norm > self.last_min_monster_dist_norm:
-            dist_delta = cur_min_dist_norm - self.last_min_monster_dist_norm
-            escape_reward = min(0.1 * dist_delta / 0.01, 0.15)  # 每0.01距离给0.1，上限0.15
-
-        # 3. 碰撞风险惩罚（修复：系数从 -0.03 增强到 -0.15，并增加极危险区间非线性惩罚）
-        # 原版最大惩罚仅 -0.03，而宝箱奖励最高 1.0，相差33倍，模型完全无视危险冲宝箱
-        # 修复后：普通危险最大 -0.15，极危险(dist<0.1)额外 -0.3，让逃跑成为有利策略
-        risk_penalty = -0.15 * max_collision_risk_norm
-        if cur_min_dist_norm < 0.1:
-            # 极危险区间：非线性惩罚，越近越大
-            risk_penalty -= 0.3 * (1.0 - cur_min_dist_norm / 0.1)
-
-        # 4. 里程碑奖励（每20步一次，减小初始值以减少噪声，让早期模型更快获得反馈）
-        if self.step_no > 0 and self.step_no % 20 == 0:
-            milestone_reward = 0.02 + 0.08 * (self.step_no / self.max_step)
-        else:
-            milestone_reward = 0.0
-
-        # 5. 紧急避险奖励（已移除：模型会故意靠近怪物再逃跑来反复触发，导致策略不稳定）
-
-        # 6. 宝箱收集奖励
-        # 直接用 env_info treasure_count 差值驱动，避免归一化精度损失
-        # 奖励值对齐任务分数比重：1个宝箱=100分，生存1000步约20分，故宝箱奖励≈5.0
+        # === 核心1: 宝箱收集奖励（大幅提升） ===
+        # 原值: 5.0 → 新值: 50.0（提升10倍，确保是主导信号）
         treasure_reward = 0.0
         try:
             treasures_remain = len(frame_state.get("treasures", []))
@@ -306,91 +288,38 @@ class Preprocessor:
                 self.last_treasure_count = treasures_remain
             elif treasures_remain < self.last_treasure_count:
                 collected = self.last_treasure_count - treasures_remain
-                treasure_reward = 5.0 * collected
+                treasure_reward = 50.0 * collected  # 提升至50分/个
                 self.last_treasure_count = treasures_remain
             else:
                 self.last_treasure_count = treasures_remain
         except Exception:
             pass
 
-        # 7. 接近宝箱引导奖励（修正版）
-        # 触发范围覆盖全图（0.0~1.0均生效），奖励随距离线性增强，越近越高。
-        # delta 奖励：每步向宝箱靠近时额外奖励，系数修正为合理值（原版系数高达10倍/单位，
-        # 导致模型学会振荡接近而不是直接踩上宝箱拾取）。
-        # 极近距离额外强化：距离 < 0.05（约9格）时给予强烈激励，推动走完最后几步完成拾取。
-        treasure_proximity_reward = 0.0
-        if treasure_feat[2] > 0.0:
+        # === 核心2: 危险惩罚（动态，仅在真正危险时触发） ===
+        # 设计原则：距离越近，惩罚指数增长，给模型明确的学习信号
+        risk_penalty = 0.0
+        if cur_min_dist_norm < 0.15:  # 仅在距离<0.15（约27格）时惩罚
+            # 指数惩罚：距离0.15→-0.5, 距离0.05→-5.0
+            danger_level = (0.15 - cur_min_dist_norm) / 0.15
+            risk_penalty = -0.5 * (danger_level ** 2) * 20  # 最高-5.0
+        
+        # === 核心3: 弱引导信号（帮助早期学习，但不足以主导策略） ===
+        # 宝箱方向引导（仅在安全时）
+        treasure_guide = 0.0
+        if treasure_feat[2] > 0.0 and cur_min_dist_norm > 0.25:  # 安全时才引导
+            # 向宝箱移动给小奖励，但远小于收集奖励
             cur_td = treasure_feat[2]
-
-            # 基础接近奖励：全范围线性，越近越高，最近时约 0.3
-            proximity_ratio = max(0.0, 1.0 - cur_td)
-            treasure_proximity_reward = 0.3 * proximity_ratio
-
-            # delta 奖励：靠近宝箱时额外奖励，系数修正（原来 /0.01 导致系数=10倍，过大）
             if self.last_treasure_dist_norm >= 0.0:
                 dist_delta = self.last_treasure_dist_norm - cur_td
                 if dist_delta > 0:
-                    # 修正系数：每步缩短 0.01 距离单位给予 0.05 奖励（原来是0.1，减半）
-                    treasure_proximity_reward += min(0.05 * dist_delta / 0.01, 0.2)
-
-            # 极近距离强化：距离 < 0.05（~9格）时额外奖励，推动完成拾取
-            if cur_td < 0.05:
-                very_close_bonus = 0.5 * (1.0 - cur_td / 0.05)  # 越近越高，最高 0.5
-                treasure_proximity_reward += very_close_bonus
-
-            # 总上限保护
-            treasure_proximity_reward = min(treasure_proximity_reward, 1.0)
-
+                    treasure_guide = 0.1 * dist_delta  # 每步最多0.1分（收集=50分）
         self.last_treasure_dist_norm = treasure_feat[2] if treasure_feat[2] > 0.0 else -1.0
-
-        # 8. Buff获取奖励（缩放到 0.2）
-        buff_reward = 0.0
-        cur_buff_active = buff_remain_norm > 0.01
-        if cur_buff_active and not self.last_buff_active:
-            buff_reward = 0.2
-        self.last_buff_active = cur_buff_active
-
-        # 9. 接近Buff奖励（触发范围扩大到0.5，安全条件：怪物距离>0.4）
-        buff_proximity_reward = 0.0
-        if 0.0 < buff_feat[2] < 0.5 and cur_min_dist_norm > 0.4:
-            proximity_ratio_buff = max(0.0, 1.0 - buff_feat[2] / 0.5)
-            buff_proximity_reward = 0.05 * proximity_ratio_buff
-
-        # 10. 移动探索奖励
-        movement_reward = 0.0
-        if self.last_hero_pos is not None:
-            lx, lz = self.last_hero_pos
-            move_dist = np.sqrt((hx - lx) ** 2 + (hz - lz) ** 2)
-            movement_reward = 0.02 * _norm(move_dist, 2.0) * (1.0 + progress_ratio * 0.5)
-        self.last_hero_pos = (hx, hz)
-
-        # 11. 技能使用奖励（缩放到 0.05~0.2，与存活奖励同量级）
-        skill_reward = 0.0
-        skill_mult = 1.0 + progress_ratio * 0.5
-        if last_action == 8:  # 闪现
-            if max_collision_risk_norm > 0.5:
-                skill_reward = 0.15 * skill_mult
-            elif max_collision_risk_norm > 0.3:
-                skill_reward = 0.08 * skill_mult
-            else:
-                skill_reward = 0.02 * skill_mult
-        elif last_action == 9:  # 天赋
-            skill_reward = 0.10 if cur_min_dist_norm < 0.5 else 0.05
 
         # 更新状态
         self.last_min_monster_dist_norm = cur_min_dist_norm
 
-        total_reward = (
-            survive_reward
-            + escape_reward
-            + risk_penalty
-            + milestone_reward
-            + treasure_reward
-            + treasure_proximity_reward
-            + buff_reward
-            + buff_proximity_reward
-            + movement_reward
-            + skill_reward
-        )
+        # === 奖励汇总 ===
+        # 权重设计：确保收集宝箱 >> 引导信号 > 噪声
+        total_reward = treasure_reward + risk_penalty + treasure_guide
 
         return feature, legal_action, [total_reward]

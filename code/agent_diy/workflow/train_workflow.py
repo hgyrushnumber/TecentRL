@@ -173,7 +173,7 @@ class EpisodeRunner:
                 reward = np.array(_remain_info.get("reward", [0.0]), dtype=np.float32)
                 total_reward += float(reward[0])
 
-                # 终局奖励
+                # 终局奖励（放大信号，确保模型学习长期目标）
                 final_reward = np.zeros(1, dtype=np.float32)
                 if done:
                     env_info = env_obs["observation"]["env_info"]
@@ -181,17 +181,21 @@ class EpisodeRunner:
                     treasure_count = env_info.get("treasure_count", 0)
 
                     if terminated:
-                        final_reward[0] = -5.0   # 被抓：强惩罚，明确告知模型死亡代价
+                        # 被抓：强惩罚，确保模型学会避怪
+                        final_reward[0] = -50.0
                         result_str = "FAIL"
                     else:
-                        final_reward[0] = 5.0    # 生存至终：强奖励，引导模型优先存活
+                        # 生存至终：强奖励 + 宝箱加成
+                        # 基础存活奖励 + 每个宝箱额外奖励
+                        final_reward[0] = 20.0 + treasure_count * 10.0
                         result_str = "WIN"
 
                     self.logger.info(
                         f"[GAMEOVER] episode:{self.episode_cnt} steps:{step} "
                         f"result:{result_str} sim_score:{total_score:.1f} "
                         f"treasure:{treasure_count} "
-                        f"total_reward:{total_reward:.3f}"
+                        f"total_reward:{total_reward:.3f} "
+                        f"final_bonus:{final_reward[0]:.1f}"
                     )
 
                 # 构造 SampleData（含 next_obs，SAC 所需）

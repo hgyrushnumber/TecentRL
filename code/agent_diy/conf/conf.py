@@ -34,24 +34,24 @@ class Config:
 
     # ── SAC 超参数 ─────────────────────────────────────────────────────
     GAMMA = 0.99                    # 折扣因子
-    INIT_LEARNING_RATE_START = 3e-4 # Actor / Critic 学习率
-    INIT_LEARNING_RATE_END = 3e-5   # 学习率衰减终点（cosine decay）
-    LR_DECAY_STEPS = 100_000        # 学习率衰减步数
-    GRAD_CLIP_RANGE = 0.5           # 梯度裁剪（收紧，减少梯度爆炸）
+    INIT_LEARNING_RATE_START = 5e-4 # Actor / Critic 学习率（提升）
+    INIT_LEARNING_RATE_END = 1e-5   # 学习率衰减终点（降低）
+    LR_DECAY_STEPS = 200_000        # 学习率衰减步数（延长至200k）
+    GRAD_CLIP_RANGE = 1.0           # 梯度裁剪（放宽）
 
     # 自动熵调整 (auto-alpha tuning)
     # target_entropy = ratio * log(|A|)，平衡探索与利用
     AUTO_ALPHA = True
     ALPHA_LR = 3e-4
-    TARGET_ENTROPY_RATIO = 0.75     # 提升到0.75，初期充分探索取宝路径，后期alpha自动衰减
+    TARGET_ENTROPY_RATIO = 0.5      # 降低到0.5，减少初期无效探索
 
     # Soft target update / 软更新系数
     TAU = 0.005                     # 回调至0.005，目标网络更新更稳定
 
     # Replay buffer / 经验回放池
-    REPLAY_BUFFER_SIZE = 20_000     # 缓冲区容量
-    BATCH_SIZE = 1024               # 增大批大小，提升梯度估计质量
-    LEARNING_STARTS = 4000          # 降低预热阈值，更早开始从经验学习
+    REPLAY_BUFFER_SIZE = 50_000     # 扩大缓冲区至50k，提升样本多样性
+    BATCH_SIZE = 512                # 降低批大小，提升更新频率
+    LEARNING_STARTS = 10_000        # 提升预热阈值至10k，确保样本多样性
 
     # ── 优先经验回放（PER）────────────────────────────────────────────
     PER_ALPHA = 0.6                 # 优先级指数（0=均匀采样，1=完全优先级）
