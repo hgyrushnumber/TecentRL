@@ -126,9 +126,9 @@ class EpisodeRunner:
                 reward = np.array(_remain_info.get("reward", [0.0]), dtype=np.float32)
                 total_reward += float(reward[0])
 
-                # 终局奖励（与 preprocessor 奖励设计对齐，统一乘以 REWARD_SCALE=0.1）
-                # 原始值放大10倍（相对于逐步奖励），补偿终局帧在 ReplayBuffer 中被稀释的问题
-                # 缩放后：被抓 -50*0.1=-5.0，存活至终 +200*0.1=+20 ~ +1200*0.1=+120
+                # 终局奖励（与 total_score 直接挂钩）
+                # 设计：整局表现决定最终奖励，鼓励长期规划而非短期行为
+                # 缩放后：被抓 -100，存活至终 +50 + 宝箱数×25
                 REWARD_SCALE = 0.1
                 final_reward = np.zeros(1, dtype=np.float32)
                 if done:
@@ -137,14 +137,13 @@ class EpisodeRunner:
                     treasure_count = env_info.get("treasure_count", 0)
 
                     if terminated:
-                        # 被抓：存活失败，强惩罚（原始-500，缩放后-50）
-                        # 量级远大于单步危险惩罚（最高-0.5），确保死亡代价明确
-                        final_reward[0] = -500.0 * REWARD_SCALE
+                        # 被抓：存活失败，强惩罚（缩放后-100）
+                        final_reward[0] = -1000.0 * REWARD_SCALE
                         result_str = "FAIL"
                     else:
-                        # 存活至终：基础奖励 + 宝箱数加成（原始200~1200，缩放后20~120）
-                        # treasure_count最多10个：200 + 10*100 = 1200
-                        final_reward[0] = (200.0 + treasure_count * 100.0) * REWARD_SCALE
+                        # 存活至终：基础奖励 + 宝箱加成（缩放后+50~+300）
+                        # 宝箱最多10个：50 + 10×25 = 300
+                        final_reward[0] = (500.0 + treasure_count * 250.0) * REWARD_SCALE
                         result_str = "WIN"
 
                     self.logger.info(
