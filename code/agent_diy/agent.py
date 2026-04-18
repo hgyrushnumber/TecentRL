@@ -55,54 +55,7 @@ class Agent(BaseAgent):
         self.logger = logger
         self.monitor = monitor
         super().__init__(agent_type, device, logger, monitor)
-
-        # Learner 启动时尝试加载上次保存的 latest checkpoint，实现断点续训
-        self._try_resume()
-
-    # ── Learner 启动断点续训（自动加载 latest checkpoint）────────────
-    def _try_resume(self):
-        """尝试从 latest checkpoint 恢复训练状态。
-
-        框架在 Learner 进程初始化 Agent 时调用（__init__ 末尾）。
-        文件不存在时静默跳过，从头开始训练。
-        """
-        # 框架将模型目录注入到 BaseAgent，尝试读取该路径
-        path = getattr(self, "model_file_path", None)
-        if path is None:
-            if self.logger:
-                self.logger.info("[SAC] _try_resume: model_file_path not set, skip resume")
-            return
-
-        model_file = f"{path}/model.ckpt-latest.pkl"
-        if not os.path.exists(model_file):
-            if self.logger:
-                self.logger.info(
-                    f"[SAC] _try_resume: no latest checkpoint at {model_file}, "
-                    f"Learner starts from scratch"
-                )
-            return
-
-        # 文件存在，执行加载
-        file_size_kb = os.path.getsize(model_file) // 1024
-        self.load_model(path=path, id="latest")
-
-        # 加载后输出验证日志
-        if self.logger:
-            first_param = next(self.model.parameters())
-            param_mean = first_param.data.mean().item()
-            param_std  = first_param.data.std().item()
-            self.logger.info(
-                f"[SAC] _try_resume: Learner resumed from {model_file} "
-                f"(size={file_size_kb}KB) | "
-                f"train_step={self.algorithm.train_step} "
-                f"alpha={self.algorithm.alpha:.4f} "
-                f"actor_param_mean={param_mean:.4f} std={param_std:.4f}"
-            )
-            if self.algorithm.train_step == 0:
-                self.logger.warning(
-                    "[SAC] _try_resume: train_step=0 after loading, "
-                    "checkpoint may be from a very early save or corrupted"
-                )
+        # 断点续训已移除：训练成本低，每次从随机初始化开始更干净
 
     # ── 每局重置（Actor 侧）──────────────────────────────────────────
     def reset(self, env_obs=None):
@@ -174,58 +127,29 @@ class Agent(BaseAgent):
         self.last_action = int(action[0])
         return int(action[0])
 
-    # ── 模型存储（标准接口，单文件存 Actor，兼容框架）────────────────
+    # ── 模型存储（只存 Actor 权重，供 Actor 侧拉取推理）─────────────
     def save_model(self, path=None, id="1"):
-        """Save actor weights + full training state (optimizer, log_alpha, train_step).
+        """Save actor weights only.
 
-        存储 Actor/Critic 权重及完整训练状态，支持断点续训。
+        断点续训已移除，仅保存 Actor 权重供 Actor 进程 load_model 拉取。
+        减少磁盘 IO，避免影响 Actor 采样效率。
         """
-        # 记录 path，供 workflow 侧 _remove_checkpoint 清理旧版本时使用
         if path is not None:
             self._model_path = path
 
-        # 主文件：actor，供 Actor 进程 load_model 拉取参数
         model_file = f"{path}/model.ckpt-{id}.pkl"
         torch.save(
             {k: v.clone().cpu() for k, v in self.model.state_dict().items()},
             model_file,
         )
-        # Critic 权重
-        critic_file = f"{path}/critic.ckpt-{id}.pkl"
-        torch.save(
-            {k: v.clone().cpu() for k, v in self.critic.state_dict().items()},
-            critic_file,
-        )
-        # Critic Target 权重（软更新的滞后版本，必须单独保存，不能用 critic 替代）
-        critic_target_file = f"{path}/critic_target.ckpt-{id}.pkl"
-        torch.save(
-            {k: v.clone().cpu() for k, v in self.algorithm.critic_target.state_dict().items()},
-            critic_target_file,
-        )
-        # 完整训练状态（优化器 + log_alpha + train_step，断点续训必需）
-        train_state_file = f"{path}/train_state.ckpt-{id}.pkl"
-        torch.save(
-            {
-                "actor_opt": self.algorithm.actor_optimizer.state_dict(),
-                "critic_opt": self.algorithm.critic_optimizer.state_dict(),
-                "alpha_opt": self.algorithm.alpha_optimizer.state_dict(),
-                "log_alpha": self.algorithm.log_alpha.item(),
-                "train_step": self.algorithm.train_step,
-            },
-            train_state_file,
-        )
         if self.logger:
-            self.logger.info(
-                f"[SAC] save model {model_file} successfully "
-                f"(train_step={self.algorithm.train_step})"
-            )
+            self.logger.info(f"[SAC] save model {model_file} successfully")
 
     def load_model(self, path=None, id="1"):
-        """Load actor weights (standard interface for Actor process).
+        """Load actor weights only (Actor process inference).
 
-        Actor 进程：只加载 Actor 权重用于推理。
-        Learner 进程：同时加载完整训练状态（优化器/log_alpha/train_step）实现断点续训。
-        文件不存在时静默跳过，从头开始训练。
+        只加载 Actor 权重用于推理，不恢复优化器/Critic 等训练状态。
+        文件不存在时静默跳过。
         """
         model_file = f"{path}/model.ckpt-{id}.pkl"
         try:
@@ -234,55 +158,12 @@ class Agent(BaseAgent):
             )
         except FileNotFoundError:
             if self.logger:
-                self.logger.info(f"[SAC] no checkpoint at {model_file}, training from scratch")
+                self.logger.info(f"[SAC] no checkpoint at {model_file}, skip")
             return
         except Exception as e:
             if self.logger:
-                self.logger.warning(f"[SAC] load actor failed: {e}, training from scratch")
+                self.logger.warning(f"[SAC] load actor failed: {e}, skip")
             return
-
-        # 尝试加载 Critic 权重（Learner 侧断点续训）
-        critic_file = f"{path}/critic.ckpt-{id}.pkl"
-        try:
-            self.critic.load_state_dict(
-                torch.load(critic_file, map_location=self.device)
-            )
-        except (FileNotFoundError, Exception):
-            pass
-
-        # 加载 critic_target（软更新的滞后快照，必须从独立文件恢复，不能用 critic 替代）
-        critic_target_file = f"{path}/critic_target.ckpt-{id}.pkl"
-        try:
-            self.algorithm.critic_target.load_state_dict(
-                torch.load(critic_target_file, map_location=self.device)
-            )
-        except FileNotFoundError:
-            # 旧版 checkpoint 没有 critic_target 文件，退而用 critic 初始化
-            self.algorithm.critic_target.load_state_dict(self.critic.state_dict())
-            if self.logger:
-                self.logger.warning(
-                    f"[SAC] no critic_target checkpoint, initialized from critic"
-                )
-        except Exception as e:
-            if self.logger:
-                self.logger.warning(f"[SAC] load critic_target failed: {e}")
-
-        # 恢复优化器状态（断点续训核心，Actor侧文件可能不存在则跳过）
-        train_state_file = f"{path}/train_state.ckpt-{id}.pkl"
-        try:
-            state = torch.load(train_state_file, map_location=self.device)
-            self.algorithm.actor_optimizer.load_state_dict(state["actor_opt"])
-            self.algorithm.critic_optimizer.load_state_dict(state["critic_opt"])
-            self.algorithm.alpha_optimizer.load_state_dict(state["alpha_opt"])
-            with torch.no_grad():
-                self.algorithm.log_alpha.fill_(state["log_alpha"])
-            self.algorithm.alpha = self.algorithm.log_alpha.exp().clamp(1e-4, 1.0).item()
-            self.algorithm.train_step = state.get("train_step", 0)
-        except (FileNotFoundError, Exception):
-            pass
 
         if self.logger:
-            self.logger.info(
-                f"[SAC] load model {model_file} successfully "
-                f"(train_step={self.algorithm.train_step})"
-            )
+            self.logger.info(f"[SAC] load model {model_file} successfully")

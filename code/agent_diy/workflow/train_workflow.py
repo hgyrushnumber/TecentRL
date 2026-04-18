@@ -43,10 +43,6 @@ def workflow(envs, agents, logger=None, monitor=None, *args, **kwargs):
         monitor=monitor,
     )
 
-    # 滚动保存计数器（版本号递增，最多保留 MAX_KEEP 个历史 checkpoint）
-    save_cnt = 0
-    MAX_KEEP = 5
-
     while True:
         # yield 一局的 collector，框架通过 send_sample_data 发给 Learner
         for g_data in episode_runner.run_episodes():
@@ -54,57 +50,14 @@ def workflow(envs, agents, logger=None, monitor=None, *args, **kwargs):
             g_data.clear()
 
             now = time.time()
-            if now - last_save_model_time >= 300:   # 每5分钟保存一次
-                save_cnt += 1
-                versioned_id = str(save_cnt)
-
-                # 1. 保存带版本号的 checkpoint（断点续训 / 回滚用）
-                agent.save_model(id=versioned_id)
-
-                # 2. 覆盖写 latest，供 Actor load_model(id="latest") 立即拉取
+            if now - last_save_model_time >= 600:   # 每10分钟保存一次 latest
+                # 只写 Actor 权重（latest），供 Actor 侧每局 load_model 拉取
+                # 断点续训已移除，不保存版本号历史 checkpoint，减少磁盘 IO
                 agent.save_model(id="latest")
 
-                # 3. 清理过旧的历史 checkpoint，防止磁盘堆积
-                old_id = save_cnt - MAX_KEEP
-                if old_id > 0:
-                    _remove_checkpoint(agent, old_id, logger)
-
                 if logger:
-                    logger.info(
-                        f"[workflow] saved checkpoint id={versioned_id}, "
-                        f"latest updated, history kept={min(save_cnt, MAX_KEEP)}"
-                    )
+                    logger.info("[workflow] saved latest checkpoint")
                 last_save_model_time = now
-
-
-def _remove_checkpoint(agent, old_id, logger):
-    """删除过旧的版本号 checkpoint，防止磁盘堆积。
-
-    agent.save_model 写入的文件均位于框架指定的 path 目录下，
-    此处通过 agent 的 save_model path 机制推断文件路径并删除。
-    """
-    # 框架调用 save_model(path, id) 时 path 由框架注入；
-    # workflow 侧直接调用 agent.save_model(id=...) 时 path=None，
-    # 框架底层会替换为实际路径，这里用相同方式构造文件名再尝试删除。
-    try:
-        path = agent._model_path if hasattr(agent, "_model_path") else None
-        if path is None:
-            return
-        suffixes = [
-            f"model.ckpt-{old_id}.pkl",
-            f"critic.ckpt-{old_id}.pkl",
-            f"critic_target.ckpt-{old_id}.pkl",
-            f"train_state.ckpt-{old_id}.pkl",
-        ]
-        for name in suffixes:
-            fp = os.path.join(path, name)
-            if os.path.exists(fp):
-                os.remove(fp)
-        if logger:
-            logger.info(f"[workflow] removed old checkpoint id={old_id}")
-    except Exception as e:
-        if logger:
-            logger.warning(f"[workflow] failed to remove checkpoint id={old_id}: {e}")
 
 
 class EpisodeRunner:
