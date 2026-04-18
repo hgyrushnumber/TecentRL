@@ -43,7 +43,7 @@ class Config:
     # target_entropy = ratio * log(|A|)，平衡探索与利用
     AUTO_ALPHA = True
     ALPHA_LR = 3e-4
-    TARGET_ENTROPY_RATIO = 0.7      # 提升至0.7，增强探索，避免过早陷入局部最优
+    TARGET_ENTROPY_RATIO = 0.98    # 目标熵接近均匀分布，最大化探索压力
 
     # Soft target update / 软更新系数
     TAU = 0.005                     # 目标网络软更新系数
@@ -54,7 +54,7 @@ class Config:
     LEARNING_STARTS = 2_000         # 降低预热阈值至2k，加快早期学习启动
 
     # ── 优先经验回放（PER）────────────────────────────────────────────
-    PER_ALPHA = 0.6                 # 优先级指数（0=均匀采样，1=完全优先级）
+    PER_ALPHA = 0.3                 # 优先级指数（降低，增加采样多样性）
     PER_BETA_START = 0.4            # IS权重初始值（逐渐增至1消除偏差）
     PER_BETA_FRAMES = 100_000       # β增长至1的帧数
 

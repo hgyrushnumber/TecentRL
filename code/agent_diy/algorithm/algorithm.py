@@ -122,9 +122,9 @@ class Algorithm:
                 )
             return None
 
-        # 3. 执行梯度更新（buffer越充实更新次数越多，最多128次）
+        # 3. 执行梯度更新（降低更新频率，避免过快收敛）
         buf_fill_ratio = min(len(self.replay_buffer) / Config.REPLAY_BUFFER_SIZE, 1.0)
-        n_updates = min(int(len(list_sample_data) * (1.0 + buf_fill_ratio)), 128)
+        n_updates = min(int(len(list_sample_data) * (1.0 + buf_fill_ratio)), 32)
         
         # PER: 收集所有批次的时间步索引和TD误差
         all_tree_indices = []
@@ -250,7 +250,7 @@ class Algorithm:
         self.alpha_optimizer.zero_grad()
         self.scaler.scale(alpha_loss).backward()
         self.scaler.step(self.alpha_optimizer)
-        self.alpha = self.log_alpha.exp().clamp(1e-4, 1.0).item()
+        self.alpha = self.log_alpha.exp().clamp(1e-4, 3.0).item()
 
         # 更新梯度缩放器
         self.scaler.update()
@@ -384,7 +384,7 @@ class Algorithm:
             # 恢复 log_alpha（可训练参数，需要特殊处理）
             with torch.no_grad():
                 self.log_alpha.fill_(state["log_alpha"])
-            self.alpha = self.log_alpha.exp().clamp(1e-4, 1.0).item()
+            self.alpha = self.log_alpha.exp().clamp(1e-4, 3.0).item()
             self.train_step = state.get("train_step", 0)
             if self.logger:
                 self.logger.info(
