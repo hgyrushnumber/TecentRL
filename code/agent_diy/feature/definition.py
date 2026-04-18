@@ -155,7 +155,7 @@ class PrioritizedReplayBuffer:
     def sample(self, batch_size):
         """优先级采样，返回(样本, 索引, IS权重)。"""
         if self.size == 0:
-            return [], [], []
+            return [], [], np.array([])
 
         # 更新β（逐渐增至1，消除重要性采样偏差）
         self.frame_count += 1
@@ -166,6 +166,10 @@ class PrioritizedReplayBuffer:
         indices = []
         priorities = []
         total_priority = self.tree[0]
+        
+        # 边界保护：如果总优先级为0，退化为均匀采样
+        if total_priority <= 0:
+            total_priority = 1.0
 
         # 分段采样（保证均匀覆盖优先级区间）
         segment = total_priority / batch_size
@@ -178,46 +182,70 @@ class PrioritizedReplayBuffer:
             tree_idx = self._retrieve(0, value)
             data_idx = tree_idx - self.capacity + 1
 
-            # 边界检查
-            if data_idx < 0 or data_idx >= self.capacity or self.data[data_idx] is None:
+            # 边界检查：确保索引有效
+            if data_idx < 0 or data_idx >= self.size or self.data[data_idx] is None:
                 # 回退到随机采样
-                data_idx = np.random.randint(0, self.size)
-                tree_idx = data_idx + self.capacity - 1
+                if self.size > 0:
+                    data_idx = np.random.randint(0, self.size)
+                    tree_idx = data_idx + self.capacity - 1
+                else:
+                    continue
 
             indices.append(tree_idx)
-            priorities.append(self.tree[tree_idx])
+            # 安全访问tree数组
+            if tree_idx < len(self.tree):
+                priorities.append(self.tree[tree_idx])
+            else:
+                priorities.append(1.0)
+
+        # 如果没有成功采样任何样本，返回空
+        if len(indices) == 0:
+            return [], [], np.array([])
 
         # 计算重要性采样权重 w_i = (N * P(i))^(-β)
         priorities = np.array(priorities, dtype=np.float64)
-        sample_probs = priorities / total_priority
-        is_weights = np.power(self.size * sample_probs, -self.beta)
+        # 防止除零
+        sample_probs = priorities / max(total_priority, 1e-8)
+        # 防止数值问题
+        is_weights = np.power(np.maximum(self.size * sample_probs, 1e-8), -self.beta)
         # 归一化权重（最大权重为1）
-        is_weights = is_weights / is_weights.max()
+        if len(is_weights) > 0 and is_weights.max() > 0:
+            is_weights = is_weights / is_weights.max()
+        else:
+            is_weights = np.ones_like(is_weights)
 
         # 提取样本
         samples = []
-        for tree_idx in indices:
+        valid_indices = []
+        valid_weights = []
+        for i, tree_idx in enumerate(indices):
             data_idx = tree_idx - self.capacity + 1
-            if self.data[data_idx] is not None:
+            if 0 <= data_idx < len(self.data) and self.data[data_idx] is not None:
                 samples.append(self.data[data_idx])
+                valid_indices.append(tree_idx)
+                valid_weights.append(is_weights[i])
 
         # 如果样本数不足，补充随机样本
         while len(samples) < batch_size and self.size > 0:
             idx = np.random.randint(0, self.size)
             if self.data[idx] is not None:
                 samples.append(self.data[idx])
-                indices.append(idx + self.capacity - 1)
-                is_weights = np.append(is_weights, 1.0)
+                valid_indices.append(idx + self.capacity - 1)
+                valid_weights.append(1.0)
 
-        return samples, indices, is_weights
+        return samples, valid_indices, np.array(valid_weights, dtype=np.float32)
 
     def update_priorities(self, tree_indices, td_errors):
         """根据TD误差更新样本优先级。"""
+        if len(tree_indices) == 0 or len(td_errors) == 0:
+            return
+            
         td_errors = np.abs(td_errors) + self.epsilon
         new_priorities = np.power(td_errors, self.alpha)
 
         for tree_idx, priority in zip(tree_indices, new_priorities):
-            if tree_idx < len(self.tree):
+            # 边界检查：确保tree_idx有效
+            if 0 <= tree_idx < len(self.tree):
                 change = priority - self.tree[tree_idx]
                 self.tree[tree_idx] = priority
                 self._propagate(tree_idx, change)

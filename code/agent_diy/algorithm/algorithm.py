@@ -134,6 +134,10 @@ class Algorithm:
             # PER采样：返回样本、时间步索引、IS权重
             batch, tree_indices, is_weights = self.replay_buffer.sample(self.batch_size)
             
+            # 检查采样是否成功
+            if len(batch) == 0:
+                continue
+            
             # 存储IS权重用于损失计算
             if len(is_weights) > 0:
                 self._is_weights = torch.tensor(is_weights, dtype=torch.float32, device=self.device).view(-1, 1)
@@ -144,9 +148,11 @@ class Algorithm:
             td_errors = self._update(batch)
             
             # 收集索引和TD误差用于批量更新优先级
-            if len(tree_indices) > 0 and len(td_errors) > 0:
-                all_tree_indices.extend(tree_indices[:len(td_errors)])
-                all_td_errors.extend(td_errors[:len(tree_indices)])
+            if len(tree_indices) > 0 and td_errors is not None and len(td_errors) > 0:
+                # 确保长度匹配
+                min_len = min(len(tree_indices), len(td_errors))
+                all_tree_indices.extend(tree_indices[:min_len])
+                all_td_errors.extend(td_errors[:min_len])
         
         # PER: 批量更新优先级
         if len(all_tree_indices) > 0 and len(all_td_errors) > 0:
@@ -176,6 +182,10 @@ class Algorithm:
 
     # ── SAC 单次梯度更新 ─────────────────────────────────────────────
     def _update(self, batch):
+        # 边界检查：如果batch为空，返回None
+        if len(batch) == 0:
+            return None
+            
         obs = torch.stack([f.obs for f in batch]).to(self.device)
         legal = torch.stack([f.legal_action for f in batch]).to(self.device)
         act = torch.stack([f.act for f in batch]).to(self.device).long().view(-1)
