@@ -132,6 +132,10 @@ class Agent(BaseAgent):
 
         存储 Actor/Critic 权重及完整训练状态，支持断点续训。
         """
+        # 记录 path，供 workflow 侧 _remove_checkpoint 清理旧版本时使用
+        if path is not None:
+            self._model_path = path
+
         # 主文件：actor，供 Actor 进程 load_model 拉取参数
         model_file = f"{path}/model.ckpt-{id}.pkl"
         torch.save(
