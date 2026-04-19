@@ -42,8 +42,8 @@ class Config:
     # 自动熵调整 (auto-alpha tuning)
     # target_entropy = ratio * log(|A|)，平衡探索与利用
     AUTO_ALPHA = True
-    ALPHA_LR = 3e-4
-    TARGET_ENTROPY_RATIO = 0.8     # 提高目标熵，防止策略过早确定性
+    ALPHA_LR = 1e-3
+    TARGET_ENTROPY_RATIO = 0.9     # 进一步提高目标熵，抑制策略过早塌缩
 
     # Soft target update / 软更新系数
     TAU = 0.005                     # 目标网络软更新系数
@@ -63,8 +63,12 @@ class Config:
     USE_AMP = True                  # 启用混合精度训练（GPU加速）
 
     # α约束范围（自动熵调节）
-    ALPHA_MIN = 0.03
-    ALPHA_MAX = 1.0
+    ALPHA_MIN = 0.08
+    ALPHA_MAX = 3.0
+
+    # 训练稳定性（奖励/目标Q裁剪）
+    REWARD_CLIP = 2.0
+    TARGET_Q_CLIP = 30.0
 
     # ── 兼容性保留（部分接口仍会读取）────────────────────────────────
     LAMDA = 0.95

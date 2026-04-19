@@ -145,8 +145,9 @@ class PrioritizedReplayBuffer:
 
             # 设置优先级（新样本使用最大优先级，保证高TD误差样本被优先采样）
             priority = self.max_priority ** self.alpha
+            old_priority = self.tree[tree_idx]
             self.tree[tree_idx] = priority
-            self._propagate(tree_idx, priority - self.tree[tree_idx])
+            self._propagate(tree_idx, priority - old_priority)
 
             # 更新索引和大小
             self.write_idx = (self.write_idx + 1) % self.capacity
@@ -249,8 +250,9 @@ class PrioritizedReplayBuffer:
                 change = priority - self.tree[tree_idx]
                 self.tree[tree_idx] = priority
                 self._propagate(tree_idx, change)
-                # 更新最大优先级
-                self.max_priority = max(self.max_priority, priority)
+
+        # 更新最大优先级（保存未加alpha幂次的原始TD误差）
+        self.max_priority = max(self.max_priority, float(np.max(td_errors)))
 
     def __len__(self):
         return self.size
