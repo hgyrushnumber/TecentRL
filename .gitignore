@@ -5,3 +5,5 @@ dev/log/*
 __pycache__/*
 
 **/*.pyc
+
+.idea/*

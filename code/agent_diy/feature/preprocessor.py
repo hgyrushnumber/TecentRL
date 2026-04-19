@@ -48,7 +48,6 @@ class Preprocessor:
         self.max_step = 1000
 
         self.last_min_monster_dist_norm = 0.5
-        self.last_potential = None
         self.last_action = -1
         self.last_flash_cd = 0
 
@@ -297,13 +296,13 @@ class Preprocessor:
             planning_feat,
         ])
 
-        # ── 奖励设计：低常数生存 + 宝箱事件 + PBRS风险差分 + 闪现质量 ──────
+        # ── 奖励设计：生存优先策略（简化版）─────────────────────────────────
         terminated = bool(env_obs.get("terminated", False))
 
-        # 1) 生存常数（低）
-        survival_reward = 0.01 if step_norm < 0.4 else 0.02
+        # 1) 生存奖励（与游戏规则对齐：每步1.5分）
+        survival_reward = 1.5
 
-        # 2) 宝箱事件奖励（主信号）
+        # 2) 宝箱收集奖励（适度，避免鼓励冒险）
         treasure_event_reward = 0.0
         try:
             treasures_remain = len(frame_state.get("treasures", []))
@@ -311,59 +310,33 @@ class Preprocessor:
                 self.last_treasure_count = treasures_remain
             elif treasures_remain < self.last_treasure_count:
                 collected = self.last_treasure_count - treasures_remain
-                treasure_event_reward = 3.0 * collected
+                treasure_event_reward = 20.0 * collected  # 每个宝箱20分
                 self.last_treasure_count = treasures_remain
             else:
                 self.last_treasure_count = treasures_remain
         except Exception:
             pass
 
-        # 3) PBRS势函数差分（安全+目标）
-        treasure_progress = 0.0
-        if treasure_feat[2] > 0.0:
-            treasure_progress = 1.0 - treasure_feat[2]
-        potential = 0.7 * cur_min_dist_norm + 0.3 * treasure_progress
-        if self.last_potential is None:
-            pbrs = 0.0
-        else:
-            pbrs = 0.99 * potential - self.last_potential
-
-        # 4) 近身危险惩罚
+        # 3) 风险惩罚（强化生存意识）
         risk_penalty = 0.0
-        if cur_min_dist_norm < 0.08:
-            danger = (0.08 - cur_min_dist_norm) / 0.08
-            risk_penalty = -1.2 * (danger ** 2)
+        if cur_min_dist_norm < 0.1:  # 扩大危险检测范围
+            danger = (0.1 - cur_min_dist_norm) / 0.1
+            risk_penalty = -5.0 * danger  # 强化惩罚力度
 
-        # 5) 闪现质量奖励（good/bad flash）
-        flash_bonus = 0.0
-        hero_moved = True
-        if self.last_hero_pos is not None:
-            hero_moved = (abs(hx - self.last_hero_pos[0]) + abs(hz - self.last_hero_pos[1])) > 1e-6
+        # 4) 终局惩罚（大幅强化，让智能体真正害怕被捕获）
+        terminal_penalty = -50.0 if terminated else 0.0
 
-        if last_action is not None and 8 <= int(last_action) <= 15:
-            dist_gain = cur_min_dist_norm - self.last_min_monster_dist_norm
-            if dist_gain > 0.04:
-                flash_bonus += 0.30
-            else:
-                flash_bonus -= 0.20
-            if not hero_moved:
-                flash_bonus -= 0.20
-
-        # 6) 终局惩罚（被怪抓）
-        terminal_penalty = -1.0 if terminated else 0.0
+        # 5) 移除复杂奖励信号（PBRS、闪现质量等），简化学习目标
 
         total_reward = (
             survival_reward
             + treasure_event_reward
-            + 0.5 * pbrs
             + risk_penalty
-            + flash_bonus
             + terminal_penalty
         )
 
         # 更新历史
         self.last_min_monster_dist_norm = cur_min_dist_norm
-        self.last_potential = potential
         self.last_treasure_dist_norm = treasure_feat[2] if treasure_feat[2] > 0.0 else -1.0
         self.last_hero_pos = (hx, hz)
         self.last_action = int(last_action) if last_action is not None else -1
