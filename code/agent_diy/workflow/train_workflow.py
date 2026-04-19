@@ -20,6 +20,7 @@ import time
 
 import numpy as np
 from agent_diy.feature.definition import SampleData, sample_process
+from agent_diy.conf.conf import Config
 from tools.metrics_utils import get_training_metrics
 from tools.train_env_conf_validate import read_usr_conf
 from common_python.utils.workflow_disaster_recovery import handle_disaster_recovery
@@ -132,6 +133,7 @@ class EpisodeRunner:
                 score_delta = 0.0 if last_score is None else np.clip(cur_score - last_score, -100.0, 100.0)
                 last_score = cur_score
                 reward[0] += 0.0015 * score_delta
+                reward[0] = float(np.clip(reward[0], -Config.REWARD_CLIP, Config.REWARD_CLIP))
                 total_reward += float(reward[0])
 
                 # 终局校准奖励：仅做轻量校准，避免与 dense reward 重复加权
