@@ -135,9 +135,9 @@ class EpisodeRunner:
                 last_score = cur_score
 
                 reward_main = score_delta  # SCORE_REWARD_SCALE配置已移除
-                reward_aux = Config.SHAPING_REWARD_WEIGHT * shaping_reward
-                reward = np.array([reward_main + reward_aux], dtype=np.float32)
-                reward[0] = float(np.clip(reward[0], -Config.REWARD_CLIP, Config.REWARD_CLIP))
+                # reward_aux = Config.SHAPING_REWARD_WEIGHT * shaping_reward  # SHAPING_REWARD_WEIGHT已移除
+                reward = np.array([reward_main], dtype=np.float32)  # 移除reward_aux
+                reward[0] = float(reward[0])  # REWARD_CLIP已移除，取消裁剪
                 total_reward += float(reward[0])
 
                 # 终局奖励置0：避免与 score_delta 主信号冲突
