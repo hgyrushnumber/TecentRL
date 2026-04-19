@@ -20,6 +20,7 @@ import time
 
 import numpy as np
 from agent_diy.feature.definition import SampleData, sample_process
+from agent_diy.conf.conf import Config
 from tools.metrics_utils import get_training_metrics
 from tools.train_env_conf_validate import read_usr_conf
 from common_python.utils.workflow_disaster_recovery import handle_disaster_recovery
@@ -102,6 +103,7 @@ class EpisodeRunner:
             done = False
             step = 0
             total_reward = 0.0
+            last_score = None
 
             self.logger.info(f"Episode {self.episode_cnt} start")
 
@@ -124,12 +126,17 @@ class EpisodeRunner:
                 _obs_data, _remain_info = self.agent.observation_process(env_obs)
 
                 reward = np.array(_remain_info.get("reward", [0.0]), dtype=np.float32)
+
+                # 评分差分塑形（与真实任务分数弱对齐，避免终局大脉冲）
+                # step_score 每步+1.5，宝箱+100；这里做小比例映射，保持训练稳定
+                cur_score = float(env_reward.get("reward", 0.0)) if isinstance(env_reward, dict) else 0.0
+                score_delta = 0.0 if last_score is None else np.clip(cur_score - last_score, -100.0, 100.0)
+                last_score = cur_score
+                reward[0] += 0.0015 * score_delta
+                reward[0] = float(np.clip(reward[0], -Config.REWARD_CLIP, Config.REWARD_CLIP))
                 total_reward += float(reward[0])
 
-                # 终局奖励（与 total_score 直接挂钩）
-                # 设计：整局表现决定最终奖励，鼓励长期规划而非短期行为
-                # 缩放后：被抓 -100，存活至终 +50 + 宝箱数×25
-                REWARD_SCALE = 0.1
+                # 终局校准奖励：仅做轻量校准，避免与 dense reward 重复加权
                 final_reward = np.zeros(1, dtype=np.float32)
                 if done:
                     env_info = env_obs["observation"]["env_info"]
@@ -137,13 +144,12 @@ class EpisodeRunner:
                     treasure_count = env_info.get("treasure_count", 0)
 
                     if terminated:
-                        # 被抓：存活失败，强惩罚（缩放后-100）
-                        final_reward[0] = -1000.0 * REWARD_SCALE
+                        # 被抓：终局小惩罚（主要学习信号来自过程风险+宝箱）
+                        final_reward[0] = -1.0
                         result_str = "FAIL"
                     else:
-                        # 存活至终：基础奖励 + 宝箱加成（缩放后+50~+300）
-                        # 宝箱最多10个：50 + 10×25 = 300
-                        final_reward[0] = (500.0 + treasure_count * 250.0) * REWARD_SCALE
+                        # 存活至终：基础奖励 + 少量宝箱加成
+                        final_reward[0] = 0.5 + 0.05 * treasure_count
                         result_str = "WIN"
 
                     self.logger.info(

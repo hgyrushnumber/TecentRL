@@ -13,7 +13,7 @@ Configuration for Gorge Chase SAC.
 
 class Config:
 
-    # Feature dimensions / 特征维度（共102维）
+    # Feature dimensions / 特征维度（共114维）
     FEATURES = [
         6,    # 英雄自身特征
         11,   # 怪物1特征（含完整方向角 sin+cos）
@@ -21,15 +21,15 @@ class Config:
         6,    # 宝箱特征（含方向向量）
         5,    # Buff特征（含方向向量）
         49,   # 局部地图特征（7×7窗口）
-        10,   # 合法动作掩码
-        4,    # 进度特征
+        16,   # 合法动作掩码（16维：8移动+8闪现）
+        10,   # 时序/规划特征（含ETA、逃逸性等）
     ]
     FEATURE_SPLIT_SHAPE = FEATURES
-    FEATURE_LEN = sum(FEATURE_SPLIT_SHAPE)   # 102
+    FEATURE_LEN = sum(FEATURE_SPLIT_SHAPE)   # 114
     DIM_OF_OBSERVATION = FEATURE_LEN
 
-    # Action space / 动作空间：8移动 + 2技能
-    ACTION_NUM = 10
+    # Action space / 动作空间：8移动 + 8方向闪现
+    ACTION_NUM = 16
     VALUE_NUM = 1
 
     # ── SAC 超参数 ─────────────────────────────────────────────────────
@@ -42,16 +42,17 @@ class Config:
     # 自动熵调整 (auto-alpha tuning)
     # target_entropy = ratio * log(|A|)，平衡探索与利用
     AUTO_ALPHA = True
-    ALPHA_LR = 3e-4
-    TARGET_ENTROPY_RATIO = 0.5     # 降低目标熵，避免无效探索
+    ALPHA_LR = 1e-3
+    TARGET_ENTROPY_RATIO = 0.9     # 进一步提高目标熵，抑制策略过早塌缩
 
     # Soft target update / 软更新系数
     TAU = 0.005                     # 目标网络软更新系数
 
     # Replay buffer / 经验回放池
-    REPLAY_BUFFER_SIZE = 50_000     # 经验回放池容量
-    BATCH_SIZE = 1024               # 批大小（提升至1024，更稳定的梯度估计）
+    REPLAY_BUFFER_SIZE = 200_000    # 经验回放池容量（提升，增强样本多样性）
+    BATCH_SIZE = 512                # 批大小（降低，缓解过平滑/早收敛）
     LEARNING_STARTS = 10_000        # 增大预热阈值至10k，收集更多多样化样本
+    UPDATES_PER_LEARN = 8           # 固定每轮更新次数，控制UTD比
 
     # ── 优先经验回放（PER）────────────────────────────────────────────
     PER_ALPHA = 0.3                 # 优先级指数（降低，增加采样多样性）
@@ -60,6 +61,14 @@ class Config:
 
     # ── 混合精度训练（AMP）────────────────────────────────────────────
     USE_AMP = True                  # 启用混合精度训练（GPU加速）
+
+    # α约束范围（自动熵调节）
+    ALPHA_MIN = 0.08
+    ALPHA_MAX = 3.0
+
+    # 训练稳定性（奖励/目标Q裁剪）
+    REWARD_CLIP = 2.0
+    TARGET_Q_CLIP = 30.0
 
     # ── 兼容性保留（部分接口仍会读取）────────────────────────────────
     LAMDA = 0.95

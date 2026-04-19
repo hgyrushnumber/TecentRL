@@ -6,8 +6,8 @@
 """
 Author: Tencent AI Arena Authors
 
-Feature preprocessor and reward design for Gorge Chase PPO.
-峡谷追猎 PPO 特征预处理与奖励设计。
+Feature preprocessor and reward design for Gorge Chase SAC.
+峡谷追猎 SAC 特征预处理与奖励设计。
 """
 
 import numpy as np
@@ -34,27 +34,33 @@ def _norm(v, v_max, v_min=0.0):
     return (v - v_min) / (v_max - v_min) if (v_max - v_min) > 1e-6 else 0.0
 
 
+def _norm_signed(v, abs_max):
+    """Normalize signed value to [0, 1] via [-abs_max, abs_max]."""
+    return _norm(v, abs_max, -abs_max)
+
+
 class Preprocessor:
     def __init__(self):
-        self.history_length = 3   # 保留3步历史（减少内存占用）
         self.reset()
 
     def reset(self):
         self.step_no = 0
         self.max_step = 1000
+
         self.last_min_monster_dist_norm = 0.5
+        self.last_potential = None
+        self.last_action = -1
+        self.last_flash_cd = 0
+
         # 怪物历史位置（用于相对速度计算）：list of [pos_x, pos_z] or None
         self.monster_prev_pos = [None, None]
         self.last_hero_pos = None
+
         self.last_treasure_count = -1   # -1 表示未初始化
-        self.last_buff_active = False
-        self.last_treasure_dist_norm = -1.0  # -1 表示未初始化，用于 delta 奖励
+        self.last_treasure_dist_norm = -1.0  # -1 表示未初始化，用于差分
 
     def feature_process(self, env_obs, last_action):
-        """Process env_obs into feature vector, legal_action mask, and reward.
-
-        将 env_obs 转换为特征向量、合法动作掩码和即时奖励。
-        """
+        """Process env_obs into feature vector, legal_action mask, and reward."""
         observation = env_obs["observation"]
         frame_state = observation["frame_state"]
         env_info = observation["env_info"]
@@ -77,22 +83,16 @@ class Preprocessor:
             _norm(hz, MAP_SIZE),
             _norm(flash_cd, MAX_FLASH_CD),
             _norm(hero.get("buff_remaining_time", 0), MAX_BUFF_DURATION),
-            1.0 if flash_cd == 0 else 0.0,    # 闪现可用
-            1.0 if talent_cd == 0 else 0.0,   # 天赋可用
+            1.0 if flash_cd == 0 else 0.0,
+            1.0 if talent_cd == 0 else 0.0,
         ], dtype=np.float32)
 
-        buff_remain_norm = hero_feat[3]
-
         # ── 怪物特征 (11D × 2) ───────────────────────────────────────────
-        # 11D = is_in_view / pos_x / pos_z / speed / dist / vel_x / vel_z /
-        #        pred_dist / collision_risk / dir_sin / dir_cos
-        # 修复：同时保留 dir_sin + dir_cos，方向角编码完整（原版仅 sin 导致90°/270°混淆）
-        # 修复：怪物不在视野时保留上一帧估算位置，不直接将 dist 置为最远值1.0，
-        #        避免模型误判"怪物已消失"而放松警惕
         monsters = frame_state.get("monsters", [])
         monster_feats = []
         cur_min_dist_norm = 1.0
         max_collision_risk_norm = 0.0
+        eta_list = [1.0, 1.0]
 
         for i in range(2):
             if i < len(monsters) and monsters[i].get("is_in_view", 0):
@@ -105,7 +105,6 @@ class Preprocessor:
                 dist_norm = _norm(raw_dist, MAX_DIST)
                 cur_min_dist_norm = min(cur_min_dist_norm, dist_norm)
 
-                # 相对速度（与上一帧位置差）
                 if self.monster_prev_pos[i] is not None:
                     pvx, pvz = self.monster_prev_pos[i]
                     vel_x = mx - pvx
@@ -114,21 +113,20 @@ class Preprocessor:
                     vel_x = vel_z = 0.0
                 self.monster_prev_pos[i] = (mx, mz)
 
-                # 线性预测3步后距离
                 pred_x = np.clip(mx + vel_x * 3, 0, MAP_SIZE)
                 pred_z = np.clip(mz + vel_z * 3, 0, MAP_SIZE)
-                pred_dist_norm = _norm(
-                    np.sqrt((hx - pred_x) ** 2 + (hz - pred_z) ** 2), MAX_DIST
-                )
+                pred_dist_norm = _norm(np.sqrt((hx - pred_x) ** 2 + (hz - pred_z) ** 2), MAX_DIST)
 
-                # 碰撞风险 = speed / distance
                 cr_norm = _norm(spd / max(raw_dist, 1.0), MAX_COLLISION_RISK)
                 max_collision_risk_norm = max(max_collision_risk_norm, cr_norm)
 
-                # 方向角：同时保留 sin + cos，完整编码来袭方向（修复：原版只有sin，方向歧义）
-                angle = np.arctan2(mz - hz, mx - hx)  # [-π, π]
-                dir_sin = (np.sin(angle) + 1.0) * 0.5  # [0, 1]
-                dir_cos = (np.cos(angle) + 1.0) * 0.5  # [0, 1]
+                angle = np.arctan2(mz - hz, mx - hx)
+                dir_sin = (np.sin(angle) + 1.0) * 0.5
+                dir_cos = (np.cos(angle) + 1.0) * 0.5
+
+                # ETA（怪物到达英雄所需步数，归一化到[0,1]，越小越危险）
+                eta = raw_dist / max(float(spd), 1e-6)
+                eta_list[i] = _norm(eta, 80.0)
 
                 monster_feats.append(np.array([
                     1.0,
@@ -136,35 +134,31 @@ class Preprocessor:
                     _norm(mz, MAP_SIZE),
                     _norm(spd, MAX_MONSTER_SPEED),
                     dist_norm,
-                    _norm(vel_x, MAX_REL_VELOCITY),
-                    _norm(vel_z, MAX_REL_VELOCITY),
+                    _norm_signed(vel_x, MAX_REL_VELOCITY),
+                    _norm_signed(vel_z, MAX_REL_VELOCITY),
                     pred_dist_norm,
                     cr_norm,
                     dir_sin,
-                    dir_cos,   # 修复补全：方向角 cos（原版缺失导致 90°/270° 无法区分）
+                    dir_cos,
                 ], dtype=np.float32))
             else:
-                # 修复：怪物不在视野时，利用上一帧保存的位置进行惯性估算
-                # 原版直接置 dist_norm=1.0 → 模型误认为怪物"安全最远"
                 if self.monster_prev_pos[i] is not None:
                     est_mx, est_mz = self.monster_prev_pos[i]
                     est_raw_dist = np.sqrt((hx - est_mx) ** 2 + (hz - est_mz) ** 2)
                     est_dist_norm = _norm(est_raw_dist, MAX_DIST)
-                    # 视野外用估算距离，但 is_in_view=0 告知模型此为估算值
                     cur_min_dist_norm = min(cur_min_dist_norm, est_dist_norm)
+                    eta_list[i] = _norm(est_raw_dist, 80.0)
                     monster_feats.append(np.array([
                         0., 0., 0., 0.,
-                        est_dist_norm,   # 估算距离，而非固定1.0
-                        0., 0.,
-                        est_dist_norm,   # pred_dist 同估算
-                        0., 0.5, 0.5,    # dir sin/cos 置中性值
+                        est_dist_norm,
+                        0.5, 0.5,
+                        est_dist_norm,
+                        0., 0.5, 0.5,
                     ], dtype=np.float32))
                 else:
-                    # 从未出现过，真正未知
-                    monster_feats.append(np.array([0., 0., 0., 0., 1., 0., 0., 1., 0., 0.5, 0.5], dtype=np.float32))
+                    monster_feats.append(np.array([0., 0., 0., 0., 1., 0.5, 0.5, 1., 0., 0.5, 0.5], dtype=np.float32))
 
         # ── 宝箱特征 (6D) ────────────────────────────────────────────────
-        # 相比原4D，新增方向向量(dx_norm, dz_norm)，模型无需自学位置差
         treasure_feat = np.zeros(6, dtype=np.float32)
         try:
             treasures = frame_state.get("treasures", [])
@@ -182,16 +176,14 @@ class Preprocessor:
                     treasure_feat[1] = _norm(tz, MAP_SIZE)
                     treasure_feat[2] = _norm(min_td, MAX_DIST)
                     treasure_feat[3] = _norm(len(treasures), 10.0)
-                    # 方向向量：归一化到 [0,1]（原始范围 [-1,1]）
                     dx = (tx - hx) / max(min_td, 1e-6)
                     dz = (tz - hz) / max(min_td, 1e-6)
-                    treasure_feat[4] = (dx + 1.0) * 0.5   # [0, 1]
-                    treasure_feat[5] = (dz + 1.0) * 0.5   # [0, 1]
+                    treasure_feat[4] = (dx + 1.0) * 0.5
+                    treasure_feat[5] = (dz + 1.0) * 0.5
         except Exception:
             pass
 
         # ── Buff特征 (5D) ────────────────────────────────────────────────
-        # 新增方向向量(dx_norm, dz_norm)，与宝箱特征对齐，帮助模型感知buff方向
         buff_feat = np.zeros(5, dtype=np.float32)
         try:
             buffs = frame_state.get("buffs", [])
@@ -208,18 +200,16 @@ class Preprocessor:
                     buff_feat[0] = _norm(bx, MAP_SIZE)
                     buff_feat[1] = _norm(bz, MAP_SIZE)
                     buff_feat[2] = _norm(min_bd, MAX_DIST)
-                    # 方向向量：归一化到 [0,1]（原始范围 [-1,1]）
                     dx = (bx - hx) / max(min_bd, 1e-6)
                     dz = (bz - hz) / max(min_bd, 1e-6)
-                    buff_feat[3] = (dx + 1.0) * 0.5   # [0, 1]
-                    buff_feat[4] = (dz + 1.0) * 0.5   # [0, 1]
+                    buff_feat[3] = (dx + 1.0) * 0.5
+                    buff_feat[4] = (dz + 1.0) * 0.5
         except Exception:
             pass
 
         # ── 局部地图特征 (49D) ───────────────────────────────────────────
-        # 修复：窗口从 4×4=16 扩大到 7×7=49，覆盖范围更广，
-        # 模型可提前感知周围障碍，防止被逼入死角
         map_feat = np.zeros(49, dtype=np.float32)
+        center = 0
         if map_info is not None and len(map_info) >= 7:
             center = len(map_info) // 2
             flat_idx = 0
@@ -229,95 +219,154 @@ class Preprocessor:
                         map_feat[flat_idx] = float(map_info[row][col] != 0)
                     flat_idx += 1
 
-        # ── 合法动作掩码 (10D) ───────────────────────────────────────────
-        legal_action = [1] * 8
+        # ── 合法动作掩码 (16D) ──────────────────────────────────────────
+        legal_action = [1] * 16
         if isinstance(legal_act_raw, list) and legal_act_raw:
             if isinstance(legal_act_raw[0], bool):
-                for j in range(min(8, len(legal_act_raw))):
+                for j in range(min(16, len(legal_act_raw))):
                     legal_action[j] = int(legal_act_raw[j])
             else:
-                valid_set = {int(a) for a in legal_act_raw if int(a) < 8}
-                legal_action = [1 if j in valid_set else 0 for j in range(8)]
-        if sum(legal_action) == 0:
-            legal_action = [1] * 8
-        legal_action.append(1 if flash_cd == 0 else 0)   # [8] 闪现
-        legal_action.append(1 if talent_cd == 0 else 0)  # [9] 天赋
+                valid_set = {int(a) for a in legal_act_raw if 0 <= int(a) < 16}
+                legal_action = [1 if j in valid_set else 0 for j in range(16)]
+        else:
+            # 回退逻辑：移动恒可用，闪现由CD控制
+            for j in range(8, 16):
+                legal_action[j] = 1 if flash_cd == 0 else 0
 
-        # ── 进度特征 (4D) ────────────────────────────────────────────────
-        # 4 个独立信息：归一化步数 / 距离最近怪物 / 碰撞风险 / 后半段标志
+        if sum(legal_action) == 0:
+            legal_action = [1] * 8 + [1 if flash_cd == 0 else 0] * 8
+
+        # ── 规划特征 (10D) ───────────────────────────────────────────────
         step_norm = _norm(self.step_no, self.max_step)
-        progress_feat = np.array([
+        eta_min = min(eta_list)
+
+        # 逃逸方向比：在8邻域中可通行方向占比
+        escape_ratio = 1.0
+        local_block_ratio = 0.0
+        corridor_len_norm = 0.0
+        if map_info is not None and len(map_info) > 0:
+            h = len(map_info)
+            w = len(map_info[0]) if h > 0 else 0
+            c = center if center > 0 else h // 2
+            dirs = [(0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1), (1, 0), (1, 1)]
+            open_cnt = 0
+            corridor_lengths = []
+            for dr, dc in dirs:
+                nr, nc = c + dr, c + dc
+                if 0 <= nr < h and 0 <= nc < w and map_info[nr][nc] != 0:
+                    open_cnt += 1
+                    # 该方向最大直行通路长度（最多5格）
+                    length = 0
+                    for k in range(1, 6):
+                        rr, cc = c + dr * k, c + dc * k
+                        if 0 <= rr < h and 0 <= cc < w and map_info[rr][cc] != 0:
+                            length += 1
+                        else:
+                            break
+                    corridor_lengths.append(length)
+            escape_ratio = open_cnt / 8.0
+            local_block_ratio = 1.0 - float(np.mean(map_feat))
+            corridor_len_norm = _norm(max(corridor_lengths) if corridor_lengths else 0, 5.0)
+
+        flash_ready = 1.0 if flash_cd == 0 else 0.0
+        post_half = 1.0 if self.step_no > self.max_step * 0.5 else 0.0
+
+        planning_feat = np.array([
             step_norm,
-            cur_min_dist_norm,                        # 当前最近怪物距离
-            max_collision_risk_norm,                  # 当前最大碰撞风险
-            1.0 if self.step_no > self.max_step * 0.5 else 0.0,  # 后半段标志
+            cur_min_dist_norm,
+            max_collision_risk_norm,
+            post_half,
+            eta_list[0],
+            eta_list[1],
+            eta_min,
+            escape_ratio,
+            local_block_ratio,
+            corridor_len_norm * flash_ready,
         ], dtype=np.float32)
 
-        # ── 拼接特征 (102D) ──────────────────────────────────────────────
-        # 6 + 11 + 11 + 6 + 5 + 49 + 10 + 4 = 102
+        # ── 拼接特征 (114D) ──────────────────────────────────────────────
+        # 6 + 11 + 11 + 6 + 5 + 49 + 16 + 10 = 114
         feature = np.concatenate([
-            hero_feat,           # 6
-            monster_feats[0],    # 11  (修复：+dir_cos，完整方向角编码)
-            monster_feats[1],    # 11  (修复：+dir_cos，完整方向角编码)
-            treasure_feat,       # 6   (原4D + 方向向量2D)
-            buff_feat,           # 5   (原3D + 方向向量2D)
-            map_feat,            # 49  (修复：7×7窗口，原4×4=16D)
-            np.array(legal_action, dtype=np.float32),  # 10
-            progress_feat,       # 4
-        ])  # total = 102
+            hero_feat,
+            monster_feats[0],
+            monster_feats[1],
+            treasure_feat,
+            buff_feat,
+            map_feat,
+            np.array(legal_action, dtype=np.float32),
+            planning_feat,
+        ])
 
-        # ── 奖励设计（稀疏奖励 + 弱引导，鼓励探索）──────────────────────
-        #
-        # 核心目标：最大化 total_score（宝箱收集数）
-        #
-        # 问题诊断：密集奖励导致模型过早收敛到"安全绕圈"的局部最优
-        #
-        # 解决方案：
-        #   1. 宝箱收集：主信号，大幅提升权重，驱动探索
-        #   2. 终局奖励：存活/被抓的最终反馈，延迟奖励
-        #   3. 存活奖励：极弱，仅防止"原地等死"策略
-        #   4. 方向引导：去掉，让模型自己探索如何拿宝箱
-        #   5. 危险惩罚：保留，但降低，不抑制探索
-        #
-        # ────────────────────────────────────────────────────────────────
-        REWARD_SCALE = 0.1   # 统一缩放因子
+        # ── 奖励设计：低常数生存 + 宝箱事件 + PBRS风险差分 + 闪现质量 ──────
+        terminated = bool(env_obs.get("terminated", False))
 
-        # === 1. 危险惩罚（降低，不抑制探索）===
-        risk_penalty = 0.0
-        if cur_min_dist_norm < 0.25:
-            danger_level = (0.25 - cur_min_dist_norm) / 0.25
-            risk_penalty = -0.5 * (danger_level ** 2)  # 降低惩罚强度
+        # 1) 生存常数（低）
+        survival_reward = 0.01 if step_norm < 0.4 else 0.02
 
-        # === 2. 存活奖励（提升权重，平衡稀疏奖励）===
-        survival_reward = 1.0  # 一局1000步累积+100，与宝箱奖励量级相当
-
-        # === 3. 宝箱收集（主信号，大幅提升）===
-        treasure_reward = 0.0
+        # 2) 宝箱事件奖励（主信号）
+        treasure_event_reward = 0.0
         try:
             treasures_remain = len(frame_state.get("treasures", []))
             if self.last_treasure_count == -1:
                 self.last_treasure_count = treasures_remain
             elif treasures_remain < self.last_treasure_count:
                 collected = self.last_treasure_count - treasures_remain
-                treasure_reward = 500.0 * collected  # 主信号：+50/个（缩放后）
+                treasure_event_reward = 3.0 * collected
                 self.last_treasure_count = treasures_remain
             else:
                 self.last_treasure_count = treasures_remain
         except Exception:
             pass
 
-        # === 4. 方向引导：去掉，让模型自主探索 ===
-        treasure_guide = 0.0
-        # 保留状态更新（供特征使用）
-        self.last_treasure_dist_norm = treasure_feat[2] if treasure_feat[2] > 0.0 else -1.0
+        # 3) PBRS势函数差分（安全+目标）
+        treasure_progress = 0.0
+        if treasure_feat[2] > 0.0:
+            treasure_progress = 1.0 - treasure_feat[2]
+        potential = 0.7 * cur_min_dist_norm + 0.3 * treasure_progress
+        if self.last_potential is None:
+            pbrs = 0.0
+        else:
+            pbrs = 0.99 * potential - self.last_potential
 
-        # 更新状态
+        # 4) 近身危险惩罚
+        risk_penalty = 0.0
+        if cur_min_dist_norm < 0.08:
+            danger = (0.08 - cur_min_dist_norm) / 0.08
+            risk_penalty = -1.2 * (danger ** 2)
+
+        # 5) 闪现质量奖励（good/bad flash）
+        flash_bonus = 0.0
+        hero_moved = True
+        if self.last_hero_pos is not None:
+            hero_moved = (abs(hx - self.last_hero_pos[0]) + abs(hz - self.last_hero_pos[1])) > 1e-6
+
+        if last_action is not None and 8 <= int(last_action) <= 15:
+            dist_gain = cur_min_dist_norm - self.last_min_monster_dist_norm
+            if dist_gain > 0.04:
+                flash_bonus += 0.30
+            else:
+                flash_bonus -= 0.20
+            if not hero_moved:
+                flash_bonus -= 0.20
+
+        # 6) 终局惩罚（被怪抓）
+        terminal_penalty = -1.0 if terminated else 0.0
+
+        total_reward = (
+            survival_reward
+            + treasure_event_reward
+            + 0.5 * pbrs
+            + risk_penalty
+            + flash_bonus
+            + terminal_penalty
+        )
+
+        # 更新历史
         self.last_min_monster_dist_norm = cur_min_dist_norm
+        self.last_potential = potential
+        self.last_treasure_dist_norm = treasure_feat[2] if treasure_feat[2] > 0.0 else -1.0
+        self.last_hero_pos = (hx, hz)
+        self.last_action = int(last_action) if last_action is not None else -1
+        self.last_flash_cd = flash_cd
 
-        # === 奖励汇总 + Reward Scaling ===
-        # 原始量级：risk [-1,0], survival +0.05/步, treasure +200/个
-        # 缩放后：risk [-0.1,0], survival +0.005/步, treasure +20/个
-        raw_reward = risk_penalty + survival_reward + treasure_reward + treasure_guide
-        total_reward = raw_reward * REWARD_SCALE
-
-        return feature, legal_action, [total_reward]
+        return feature, legal_action, [float(total_reward)]

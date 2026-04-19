@@ -122,13 +122,13 @@ class Algorithm:
                 )
             return None
 
-        # 3. 执行梯度更新（降低更新频率，避免过快收敛）
-        buf_fill_ratio = min(len(self.replay_buffer) / Config.REPLAY_BUFFER_SIZE, 1.0)
-        n_updates = min(int(len(list_sample_data) * (1.0 + buf_fill_ratio)), 32)
+        # 3. 执行固定次数梯度更新（控制UTD比，降低过快收敛风险）
+        n_updates = Config.UPDATES_PER_LEARN
         
         # PER: 收集所有批次的时间步索引和TD误差
         all_tree_indices = []
         all_td_errors = []
+        td_abs_mean_list = []
         
         for _ in range(n_updates):
             # PER采样：返回样本、时间步索引、IS权重
@@ -146,6 +146,8 @@ class Algorithm:
             
             # 执行梯度更新并获取TD误差
             td_errors = self._update(batch)
+            if td_errors is not None and len(td_errors) > 0:
+                td_abs_mean_list.append(float(np.mean(np.abs(td_errors))))
             
             # 收集索引和TD误差用于批量更新优先级
             if len(tree_indices) > 0 and td_errors is not None and len(td_errors) > 0:
@@ -158,8 +160,12 @@ class Algorithm:
         if len(all_tree_indices) > 0 and len(all_td_errors) > 0:
             self.replay_buffer.update_priorities(all_tree_indices, np.array(all_td_errors))
 
-        # 4. 返回本局周期平均损失（实时上报给框架，对齐PPO字段名）
-        cnt = max(self._loss_accum["count"], 1)
+        # 4. 若本轮无有效更新，跳过上报（避免出现全0伪损失）
+        if self._loss_accum["count"] == 0:
+            return None
+
+        # 返回本局周期平均损失（实时上报给框架，对齐PPO字段名）
+        cnt = self._loss_accum["count"]
         results = {
             # 对齐PPO字段：value_loss / policy_loss / entropy_loss / total_loss
             "value_loss":   round(self._loss_accum["critic_loss"] / cnt, 4),
@@ -175,6 +181,8 @@ class Algorithm:
             "buffer_size":  len(self.replay_buffer),
             "train_step":   self.train_step,
             "beta":         round(self.replay_buffer.beta, 4),  # PER β值
+            "effective_updates": int(self._loss_accum["count"]),
+            "td_abs_mean": round(float(np.mean(td_abs_mean_list)) if td_abs_mean_list else 0.0, 4),
         }
         # 返回后重置累积器，避免历史数据污染下一周期上报
         self._loss_accum = {k: 0.0 for k in self._loss_accum}
@@ -204,6 +212,7 @@ class Algorithm:
                 # 软贝尔曼目标 V(s') = Σ_a π * (Q - α*logπ)
                 v_next = (next_probs * (min_q_t - self.alpha * next_log_p)).sum(1, keepdim=True)
                 target_q = rew + self.gamma * (1.0 - done) * v_next
+                target_q = torch.clamp(target_q, -Config.TARGET_Q_CLIP, Config.TARGET_Q_CLIP)
 
             q1_all, q2_all = self.critic(obs, legal)
             q1 = q1_all.gather(1, act.unsqueeze(1))
@@ -212,7 +221,7 @@ class Algorithm:
             # PER: 返回未归约的TD误差用于优先级更新
             td_error_1 = q1 - target_q
             td_error_2 = q2 - target_q
-            critic_loss = F.mse_loss(q1, target_q, reduction='none') + F.mse_loss(q2, target_q, reduction='none')
+            critic_loss = F.smooth_l1_loss(q1, target_q, reduction='none') + F.smooth_l1_loss(q2, target_q, reduction='none')
             
             # 如果是PER采样，应用重要性采样权重
             if hasattr(self, '_is_weights') and self._is_weights is not None:
@@ -250,7 +259,7 @@ class Algorithm:
         self.alpha_optimizer.zero_grad()
         self.scaler.scale(alpha_loss).backward()
         self.scaler.step(self.alpha_optimizer)
-        self.alpha = self.log_alpha.exp().clamp(0.2, 3.0).item()  # 增大下限至0.2，防止熵过早衰减
+        self.alpha = self.log_alpha.exp().clamp(Config.ALPHA_MIN, Config.ALPHA_MAX).item()
 
         # 更新梯度缩放器
         self.scaler.update()
