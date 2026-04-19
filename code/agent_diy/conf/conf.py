@@ -34,7 +34,7 @@ class Config:
 
     # ── SAC 超参数 ─────────────────────────────────────────────────────
     GAMMA = 0.99                    # 折扣因子
-    INIT_LEARNING_RATE_START = 1e-4 # Actor / Critic 学习率（降低，延缓收敛）
+    INIT_LEARNING_RATE_START = 3e-5  # 降低学习率，提高稳定性 # Actor / Critic 学习率（降低，延缓收敛）
     INIT_LEARNING_RATE_END = 1e-5   # 学习率衰减终点
     LR_DECAY_STEPS = 2_000_000      # 延长学习率衰减步数，防止Actor锁死
     GRAD_CLIP_RANGE = 1.0           # 梯度裁剪
@@ -43,15 +43,15 @@ class Config:
     # target_entropy = ratio * log(|A|)，平衡探索与利用
     AUTO_ALPHA = True
     ALPHA_LR = 3e-3    # 提高学习率，加速α调节响应
-    TARGET_ENTROPY_RATIO = 0.9     # 进一步提高目标熵，抑制策略过早塌缩
+    TARGET_ENTROPY_RATIO = -0.9  # 修正符号，符合SAC理论: H_target = -log(action_dim)     # 进一步提高目标熵，抑制策略过早塌缩
 
     # Soft target update / 软更新系数
     TAU = 0.005                     # 目标网络软更新系数
 
     # Replay buffer / 经验回放池
-    REPLAY_BUFFER_SIZE = 200_000    # 经验回放池容量（提升，增强样本多样性）
-    BATCH_SIZE = 512                # 批大小（降低，缓解过平滑/早收敛）
-    LEARNING_STARTS = 10_000        # 增大预热阈值至10k，收集更多多样化样本
+    REPLAY_BUFFER_SIZE = 500_000    # 增大缓冲区容量，提高样本多样性
+    BATCH_SIZE = 256                # 减小批次大小，降低梯度估计噪声
+    LEARNING_STARTS = 20_000        # 延长预热步数，积累更多高质量样本
     UPDATES_PER_LEARN = 8           # 固定每轮更新次数，控制UTD比
 
     # ── 优先经验回放（PER）────────────────────────────────────────────
@@ -64,7 +64,7 @@ class Config:
 
     # α约束范围（自动熵调节）- 防止过早衰减
     ALPHA_MIN = 0.2    # 提高下限，防止α过早衰减
-    ALPHA_MAX = 3.0
+    ALPHA_MAX = 1.0  # 降低上限，防止过度探索
 
     # 训练稳定性（已移除reward scaling操作）
     # REWARD_CLIP = 2.0  # 已移除

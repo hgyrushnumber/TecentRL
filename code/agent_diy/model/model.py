@@ -37,14 +37,17 @@ def _build_mlp(input_dim, hidden_dim, mid_dim):
     """
     backbone = nn.Sequential(
         _make_fc(input_dim, hidden_dim),
-        nn.LayerNorm(hidden_dim),
+        nn.BatchNorm1d(hidden_dim),  # 替换LayerNorm为BatchNorm1d
         nn.ELU(),
+        nn.Dropout(0.2),  # 添加Dropout防止过拟合
         _make_fc(hidden_dim, hidden_dim),
-        nn.LayerNorm(hidden_dim),
+        nn.BatchNorm1d(hidden_dim),
         nn.ELU(),
+        nn.Dropout(0.2),
         _make_fc(hidden_dim, mid_dim),
-        nn.LayerNorm(mid_dim),
+        nn.BatchNorm1d(mid_dim),
         nn.ELU(),
+        nn.Dropout(0.2),
     )
     skip = _make_fc(input_dim, mid_dim)
     return backbone, skip

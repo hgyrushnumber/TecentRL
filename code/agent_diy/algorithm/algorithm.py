@@ -226,7 +226,9 @@ class Algorithm:
             
             # 如果是PER采样，应用重要性采样权重
             if hasattr(self, '_is_weights') and self._is_weights is not None:
-                critic_loss = (critic_loss * self._is_weights).mean()
+                # 重要性采样权重归一化：除以最大权重，减少方差
+                is_weights_norm = self._is_weights / self._is_weights.max()
+                critic_loss = (critic_loss * is_weights_norm).mean()
             else:
                 critic_loss = critic_loss.mean()
 
@@ -255,7 +257,7 @@ class Algorithm:
         with autocast(enabled=self.use_amp):
             with torch.no_grad():
                 entropy = -(probs * log_p).sum(1).mean()
-            alpha_loss = self.log_alpha * (entropy - self.target_entropy).detach()
+            alpha_loss = -self.log_alpha * (entropy - self.target_entropy).detach()  # 添加负号，修正优化方向
 
         self.alpha_optimizer.zero_grad()
         self.scaler.scale(alpha_loss).backward()
