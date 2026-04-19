@@ -122,9 +122,8 @@ class Algorithm:
                 )
             return None
 
-        # 3. 执行梯度更新（降低更新频率，避免过快收敛）
-        buf_fill_ratio = min(len(self.replay_buffer) / Config.REPLAY_BUFFER_SIZE, 1.0)
-        n_updates = min(int(len(list_sample_data) * (1.0 + buf_fill_ratio)), 32)
+        # 3. 执行固定次数梯度更新（控制UTD比，降低过快收敛风险）
+        n_updates = Config.UPDATES_PER_LEARN
         
         # PER: 收集所有批次的时间步索引和TD误差
         all_tree_indices = []
@@ -250,7 +249,7 @@ class Algorithm:
         self.alpha_optimizer.zero_grad()
         self.scaler.scale(alpha_loss).backward()
         self.scaler.step(self.alpha_optimizer)
-        self.alpha = self.log_alpha.exp().clamp(0.2, 3.0).item()  # 增大下限至0.2，防止熵过早衰减
+        self.alpha = self.log_alpha.exp().clamp(Config.ALPHA_MIN, Config.ALPHA_MAX).item()
 
         # 更新梯度缩放器
         self.scaler.update()

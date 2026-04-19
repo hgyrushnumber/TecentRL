@@ -29,7 +29,7 @@ def test_prioritized_replay_buffer():
         sample = SampleData(
             obs=np.random.randn(Config.DIM_OF_OBSERVATION).astype(np.float32),
             legal_action=np.random.rand(Config.ACTION_NUM).astype(np.float32),
-            act=np.array([i % 10], dtype=np.float32),
+            act=np.array([i % Config.ACTION_NUM], dtype=np.float32),
             reward=np.array([np.random.rand()], dtype=np.float32),
             done=np.array([0.0], dtype=np.float32),
             next_obs=np.random.randn(Config.DIM_OF_OBSERVATION).astype(np.float32),
