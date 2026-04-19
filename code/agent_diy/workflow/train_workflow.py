@@ -134,7 +134,7 @@ class EpisodeRunner:
                 score_delta = 0.0 if last_score is None else np.clip(cur_score - last_score, -100.0, 100.0)
                 last_score = cur_score
 
-                reward_main = score_delta / Config.SCORE_REWARD_SCALE
+                reward_main = score_delta  # SCORE_REWARD_SCALE配置已移除
                 reward_aux = Config.SHAPING_REWARD_WEIGHT * shaping_reward
                 reward = np.array([reward_main + reward_aux], dtype=np.float32)
                 reward[0] = float(np.clip(reward[0], -Config.REWARD_CLIP, Config.REWARD_CLIP))
