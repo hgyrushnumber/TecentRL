@@ -66,13 +66,11 @@ class Config:
     ALPHA_MIN = 0.2    # 提高下限，防止α过早衰减
     ALPHA_MAX = 3.0
 
-    # 训练稳定性（奖励/目标Q裁剪）
-    REWARD_CLIP = 2.0
-    TARGET_Q_CLIP = 30.0
-    # 分数对齐奖励：每步奖励 = score_delta / SCORE_REWARD_SCALE + SHAPING_REWARD_WEIGHT * shaping
-    # 主目标为 total_score，建议以分数增量作为主信号，shaping 仅作辅助。
-    SCORE_REWARD_SCALE = 50.0
-    SHAPING_REWARD_WEIGHT = 0.2
+    # 训练稳定性（已移除reward scaling操作）
+    # REWARD_CLIP = 2.0  # 已移除
+    # TARGET_Q_CLIP = 30.0  # 已移除
+    # SCORE_REWARD_SCALE = 50.0  # 已移除
+    # SHAPING_REWARD_WEIGHT = 0.2  # 已移除
 
     # ── 兼容性保留（部分接口仍会读取）────────────────────────────────
     LAMDA = 0.95

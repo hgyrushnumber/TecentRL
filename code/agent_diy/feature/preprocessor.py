@@ -302,7 +302,7 @@ class Preprocessor:
         # 1) 生存奖励（与游戏规则对齐：每步1.5分）
         survival_reward = 1.5
 
-        # 2) 宝箱收集奖励（适度，避免鼓励冒险）
+        # 2) 宝箱收集奖励（与游戏规则对齐：每个宝箱100分）
         treasure_event_reward = 0.0
         try:
             treasures_remain = len(frame_state.get("treasures", []))
@@ -310,18 +310,18 @@ class Preprocessor:
                 self.last_treasure_count = treasures_remain
             elif treasures_remain < self.last_treasure_count:
                 collected = self.last_treasure_count - treasures_remain
-                treasure_event_reward = 20.0 * collected  # 每个宝箱20分
+                treasure_event_reward = 100.0 * collected  # 每个宝箱100分（游戏规则）
                 self.last_treasure_count = treasures_remain
             else:
                 self.last_treasure_count = treasures_remain
         except Exception:
             pass
 
-        # 3) 风险惩罚（强化生存意识）
+        # 3) 风险惩罚（适度，鼓励合理冒险）
         risk_penalty = 0.0
-        if cur_min_dist_norm < 0.1:  # 扩大危险检测范围
-            danger = (0.1 - cur_min_dist_norm) / 0.1
-            risk_penalty = -5.0 * danger  # 强化惩罚力度
+        if cur_min_dist_norm < 0.05:  # 缩小危险检测范围
+            danger = (0.05 - cur_min_dist_norm) / 0.05
+            risk_penalty = -2.0 * danger  # 降低惩罚力度
 
         # 4) 终局惩罚（大幅强化，让智能体真正害怕被捕获）
         terminal_penalty = -50.0 if terminated else 0.0

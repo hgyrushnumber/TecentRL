@@ -212,7 +212,8 @@ class Algorithm:
                 # 软贝尔曼目标 V(s') = Σ_a π * (Q - α*logπ)
                 v_next = (next_probs * (min_q_t - self.alpha * next_log_p)).sum(1, keepdim=True)
                 target_q = rew + self.gamma * (1.0 - done) * v_next
-                target_q = torch.clamp(target_q, -Config.TARGET_Q_CLIP, Config.TARGET_Q_CLIP)
+                # 移除目标Q值裁剪，让智能体正确学习奖励价值
+                # target_q = torch.clamp(target_q, -Config.TARGET_Q_CLIP, Config.TARGET_Q_CLIP)
 
             q1_all, q2_all = self.critic(obs, legal)
             q1 = q1_all.gather(1, act.unsqueeze(1))
