@@ -21,15 +21,15 @@ class Config:
         6,    # 宝箱特征（含方向向量）
         5,    # Buff特征（含方向向量）
         49,   # 局部地图特征（7×7窗口）
-        48,   # 合法动作掩码（48维：24移动+24闪现）
+        16,   # 合法动作掩码（16维：8移动+8闪现）
         10,   # 时序/规划特征（含ETA、逃逸性等）
     ]
     FEATURE_SPLIT_SHAPE = FEATURES
     FEATURE_LEN = sum(FEATURE_SPLIT_SHAPE)   # 114
     DIM_OF_OBSERVATION = FEATURE_LEN
 
-    # Action space / 动作空间：24移动 + 24方向闪现（15°间隔）
-    ACTION_NUM = 48
+    # Action space / 动作空间：8移动 + 8方向闪现
+    ACTION_NUM = 16
     VALUE_NUM = 1
 
     # ── SAC 超参数 ─────────────────────────────────────────────────────
