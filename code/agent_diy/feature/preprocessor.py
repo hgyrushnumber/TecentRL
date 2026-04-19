@@ -218,28 +218,28 @@ class Preprocessor:
                         map_feat[flat_idx] = float(map_info[row][col] != 0)
                     flat_idx += 1
 
-        # ── 合法动作掩码 (16D) ──────────────────────────────────────────
-        legal_action = [1] * 16
+        # ── 合法动作掩码 (48D) ──────────────────────────────────────────
+        legal_action = [1] * 48
         if isinstance(legal_act_raw, list) and legal_act_raw:
             if isinstance(legal_act_raw[0], bool):
-                for j in range(min(16, len(legal_act_raw))):
+                for j in range(min(48, len(legal_act_raw))):
                     legal_action[j] = int(legal_act_raw[j])
             else:
-                valid_set = {int(a) for a in legal_act_raw if 0 <= int(a) < 16}
-                legal_action = [1 if j in valid_set else 0 for j in range(16)]
+                valid_set = {int(a) for a in legal_act_raw if 0 <= int(a) < 48}
+                legal_action = [1 if j in valid_set else 0 for j in range(48)]
         else:
             # 回退逻辑：移动恒可用，闪现由CD控制
-            for j in range(8, 16):
+            for j in range(24, 48):
                 legal_action[j] = 1 if flash_cd == 0 else 0
 
         if sum(legal_action) == 0:
-            legal_action = [1] * 8 + [1 if flash_cd == 0 else 0] * 8
+            legal_action = [1] * 24 + [1 if flash_cd == 0 else 0] * 24
 
         # ── 规划特征 (10D) ───────────────────────────────────────────────
         step_norm = _norm(self.step_no, self.max_step)
         eta_min = min(eta_list)
 
-        # 逃逸方向比：在8邻域中可通行方向占比
+        # 逃逸方向比：在24邻域中可通行方向占比（15°间隔）
         escape_ratio = 1.0
         local_block_ratio = 0.0
         corridor_len_norm = 0.0
@@ -247,7 +247,16 @@ class Preprocessor:
             h = len(map_info)
             w = len(map_info[0]) if h > 0 else 0
             c = center if center > 0 else h // 2
-            dirs = [(0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1), (1, 0), (1, 1)]
+
+            # 24个方向（15°间隔）
+            dirs = []
+            for i in range(24):
+                angle = i * 15 * np.pi / 180  # 转换为弧度
+                dr = round(np.sin(angle))  # 行方向变化
+                dc = round(np.cos(angle))  # 列方向变化
+                if (dr, dc) != (0, 0):  # 排除零向量
+                    dirs.append((dr, dc))
+
             open_cnt = 0
             corridor_lengths = []
             for dr, dc in dirs:
@@ -263,7 +272,7 @@ class Preprocessor:
                         else:
                             break
                     corridor_lengths.append(length)
-            escape_ratio = open_cnt / 8.0
+            escape_ratio = open_cnt / 24.0  # 更新分母为24
             local_block_ratio = 1.0 - float(np.mean(map_feat))
             corridor_len_norm = _norm(max(corridor_lengths) if corridor_lengths else 0, 5.0)
 

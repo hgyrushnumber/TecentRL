@@ -21,28 +21,28 @@ class Config:
         6,    # 宝箱特征（含方向向量）
         5,    # Buff特征（含方向向量）
         49,   # 局部地图特征（7×7窗口）
-        16,   # 合法动作掩码（16维：8移动+8闪现）
+        48,   # 合法动作掩码（48维：24移动+24闪现）
         10,   # 时序/规划特征（含ETA、逃逸性等）
     ]
     FEATURE_SPLIT_SHAPE = FEATURES
     FEATURE_LEN = sum(FEATURE_SPLIT_SHAPE)   # 114
     DIM_OF_OBSERVATION = FEATURE_LEN
 
-    # Action space / 动作空间：8移动 + 8方向闪现
-    ACTION_NUM = 16
+    # Action space / 动作空间：24移动 + 24方向闪现（15°间隔）
+    ACTION_NUM = 48
     VALUE_NUM = 1
 
     # ── SAC 超参数 ─────────────────────────────────────────────────────
     GAMMA = 0.99                    # 折扣因子
     INIT_LEARNING_RATE_START = 1e-4 # Actor / Critic 学习率（降低，延缓收敛）
     INIT_LEARNING_RATE_END = 1e-5   # 学习率衰减终点
-    LR_DECAY_STEPS = 1_000_000      # 学习率衰减步数（延长至1M，防止过早收敛）
+    LR_DECAY_STEPS = 2_000_000      # 延长学习率衰减步数，防止Actor锁死
     GRAD_CLIP_RANGE = 1.0           # 梯度裁剪
 
     # 自动熵调整 (auto-alpha tuning)
     # target_entropy = ratio * log(|A|)，平衡探索与利用
     AUTO_ALPHA = True
-    ALPHA_LR = 1e-3
+    ALPHA_LR = 3e-3    # 提高学习率，加速α调节响应
     TARGET_ENTROPY_RATIO = 0.9     # 进一步提高目标熵，抑制策略过早塌缩
 
     # Soft target update / 软更新系数
@@ -62,8 +62,8 @@ class Config:
     # ── 混合精度训练（AMP）────────────────────────────────────────────
     USE_AMP = True                  # 启用混合精度训练（GPU加速）
 
-    # α约束范围（自动熵调节）
-    ALPHA_MIN = 0.08
+    # α约束范围（自动熵调节）- 防止过早衰减
+    ALPHA_MIN = 0.2    # 提高下限，防止α过早衰减
     ALPHA_MAX = 3.0
 
     # 训练稳定性（奖励/目标Q裁剪）

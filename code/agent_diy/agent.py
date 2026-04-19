@@ -82,8 +82,8 @@ class Agent(BaseAgent):
         with torch.no_grad():
             probs = self.model(obs_t, la_t)[0].cpu().numpy()  # (A,)
 
-        # ε-greedy 探索：提高随机探索比例，缓解策略过早塌缩到局部最优
-        if np.random.random() < 0.2:
+        # ε-greedy 探索：大幅提高随机探索比例，防止Actor锁死
+        if np.random.random() < 0.3:  # 从20%提高到30%随机探索
             legal_actions = np.where(np.array(legal_action) == 1)[0]
             if len(legal_actions) > 0:
                 action = int(np.random.choice(legal_actions))
@@ -92,10 +92,14 @@ class Agent(BaseAgent):
                 probs_out[action] = 1.0
                 return [ActData(action=[action], d_action=[d_action], prob=list(probs_out), value=[0.0])]
 
-        # 随机采样（探索）
-        probs = np.clip(probs, 1e-9, None)
-        probs /= probs.sum()
-        action = int(np.random.choice(len(probs), p=probs))
+        # 基于策略的采样，但增加温度系数防止塌缩
+        temperature = 1.5  # 增加温度，提高探索性
+        logits = np.log(np.clip(probs, 1e-9, None))
+        tempered_logits = logits / temperature
+        tempered_probs = np.exp(tempered_logits)
+        tempered_probs = tempered_probs / np.sum(tempered_probs)
+
+        action = int(np.random.choice(len(tempered_probs), p=tempered_probs))
         d_action = int(np.argmax(probs))
 
         return [ActData(action=[action], d_action=[d_action], prob=list(probs), value=[0.0])]
