@@ -125,32 +125,27 @@ class EpisodeRunner:
                 # 下一帧观测（SAC 需要 next_obs）
                 _obs_data, _remain_info = self.agent.observation_process(env_obs)
 
-                reward = np.array(_remain_info.get("reward", [0.0]), dtype=np.float32)
+                shaping_reward = float(np.array(_remain_info.get("reward", [0.0]), dtype=np.float32)[0])
 
-                # 评分差分塑形（与真实任务分数弱对齐，避免终局大脉冲）
-                # step_score 每步+1.5，宝箱+100；这里做小比例映射，保持训练稳定
-                cur_score = float(env_reward.get("reward", 0.0)) if isinstance(env_reward, dict) else 0.0
+                # 训练目标与主任务对齐：以 total_score 增量作为主奖励
+                # shaping 仅作辅助，避免“loss收敛但总分不涨”
+                env_info = env_obs["observation"]["env_info"]
+                cur_score = float(env_info.get("total_score", 0.0))
                 score_delta = 0.0 if last_score is None else np.clip(cur_score - last_score, -100.0, 100.0)
                 last_score = cur_score
-                reward[0] += 0.0015 * score_delta
+
+                reward_main = score_delta / Config.SCORE_REWARD_SCALE
+                reward_aux = Config.SHAPING_REWARD_WEIGHT * shaping_reward
+                reward = np.array([reward_main + reward_aux], dtype=np.float32)
                 reward[0] = float(np.clip(reward[0], -Config.REWARD_CLIP, Config.REWARD_CLIP))
                 total_reward += float(reward[0])
 
-                # 终局校准奖励：仅做轻量校准，避免与 dense reward 重复加权
+                # 终局奖励置0：避免与 score_delta 主信号冲突
                 final_reward = np.zeros(1, dtype=np.float32)
                 if done:
-                    env_info = env_obs["observation"]["env_info"]
                     total_score = env_info.get("total_score", 0)
                     treasure_count = env_info.get("treasure_count", 0)
-
-                    if terminated:
-                        # 被抓：终局小惩罚（主要学习信号来自过程风险+宝箱）
-                        final_reward[0] = -1.0
-                        result_str = "FAIL"
-                    else:
-                        # 存活至终：基础奖励 + 少量宝箱加成
-                        final_reward[0] = 0.5 + 0.05 * treasure_count
-                        result_str = "WIN"
+                    result_str = "FAIL" if terminated else "WIN"
 
                     self.logger.info(
                         f"[GAMEOVER] episode:{self.episode_cnt} steps:{step} "
