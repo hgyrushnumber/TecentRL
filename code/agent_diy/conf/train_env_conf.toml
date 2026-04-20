@@ -1,11 +1,11 @@
 [env_conf]
 # Maps used for training. Customize by keeping only desired map IDs, e.g. [1, 2] for maps 1 and 2.
 # 训练使用的地图。可自定义选择期望用来训练的地图，如只期望使用1、2号地图训练数组内仅保留[1,2]即可。
-map = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+map = [1,2,3,4,5,6,7,8,9,10]
 
 # Whether to randomly select maps. true = randomly pick one from configured maps per episode, false = used sequentially.
 # 是否随机抽取地图。布尔值。true表示每局从配置的地图中随机抽取一张，false表示按顺序抽取地图训练。
-map_random = true
+map_random = false
 
 # Number of treasures. Range: 0~10. When less than 10, spawn points are randomly chosen from available positions.
 # 宝箱数量。可配置范围为0～10。当配置小于10时，将从每张地图可生成宝箱的点位随机选择对应数量的点位生成宝箱。
@@ -25,11 +25,11 @@ talent_cooldown = 100
 
 # Steps before the second monster appears. Range: -1, 11~2000. -1 means random within 11~2000.
 # 第二个怪物出现间隔。即预测多少步后，出现第二个怪物。可配置范围为-1,11～2000。-1即为在11～2000范围内随机生成对应配置。
-monster_interval = -1
+monster_interval =300
 
 # Steps before monster speed increases by one grid. Range: -1, 1~2000. -1 means random within 1~2000.
 # 怪物加速增益时间。即开局多少步后，怪物移动速度增加一格。可配置范围-1,1～2000。-1即为在1～2000范围内随机生成对应配置。
-monster_speedup = -1
+monster_speedup = 500
 
 # Maximum steps per episode. The episode ends when this limit is reached. Range: 1~2000.
 # 最大步数。单局任务预测步数达到最大步数时，任务结束。可配置范围为1～2000。

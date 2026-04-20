@@ -1,4 +1,6 @@
 version: '3.8'
+# 支持部署环境：
+# windows, x86 cpu， nvidia显卡
 x-kaiwu-client:
   docker_registry: kaiwu-pub.tencentcloudcr.com
   version_path: ./code/kaiwu.json
@@ -15,8 +17,7 @@ x-kaiwu-client:
 
 services:
   prometheus-pushgateway:
-    # pushgateway_type为pushgateway与pushgateway_arm64
-    image: 'kaiwu-pub.tencentcloudcr.com/project/monitor/pushgateway_${KAIWU_CPU_TYPE}:20250726'
+    image: 'kaiwu-pub.tencentcloudcr.com/project/monitor/pushgateway_x86:20250726'
     restart: always
     command:
       - --log.level=debug
@@ -26,8 +27,7 @@ services:
 
   gamecore:
     ipc: host
-    # gamecore_type为gamecore与gamecore_arm64
-    image: 'kaiwu-pub.tencentcloudcr.com/project/${KAIWU_PROJECT_CODE}/edu/gamecore_${KAIWU_CPU_TYPE}:${KAIWU_PROJECT_VERSION}'
+    image: 'kaiwu-pub.tencentcloudcr.com/project/${KAIWU_PROJECT_CODE}/edu/gamecore_x86:${KAIWU_PROJECT_VERSION}'
     restart: always
     volumes:
       - '${KAIWU_LICENSE_PATH}:/sgame/license.dat'
@@ -38,7 +38,7 @@ services:
 
   kaiwu_env:
     ipc: host
-    image: 'kaiwu-pub.tencentcloudcr.com/project/${KAIWU_PROJECT_CODE}/edu/kaiwu_env_${KAIWU_CPU_TYPE}:${KAIWU_PROJECT_VERSION}'
+    image: 'kaiwu-pub.tencentcloudcr.com/project/${KAIWU_PROJECT_CODE}/edu/kaiwu_env_x86:${KAIWU_PROJECT_VERSION}'
     restart: always
     depends_on:
       - gamecore
@@ -51,8 +51,7 @@ services:
 
   kaiwudrl:
     ipc: host
-    # cpu_type为cpu与arm64
-    image: 'kaiwu-pub.tencentcloudcr.com/project/${KAIWU_PROJECT_CODE}/edu/cpu_${KAIWU_CPU_TYPE}:${KAIWU_PROJECT_VERSION}'
+    image: 'kaiwu-pub.tencentcloudcr.com/project/${KAIWU_PROJECT_CODE}/edu/win_gpu:${KAIWU_PROJECT_VERSION}'
     volumes:
       - '${KAIWU_DEV_LOG}:/data/projects/${KAIWU_PROJECT_CODE}/log'
       - '${KAIWU_CODE_FILE}:/workspace/code'
@@ -72,3 +71,10 @@ services:
       - bash
       - '-c'
       - 'sh /root/tools/start_dev_client.sh ide'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]

@@ -49,9 +49,9 @@ class Config:
     TAU = 0.005                     # 目标网络软更新系数
 
     # Replay buffer / 经验回放池
-    REPLAY_BUFFER_SIZE = 500_000    # 增大缓冲区容量，提高样本多样性
+    REPLAY_BUFFER_SIZE = 200_000    # 增大缓冲区容量，提高样本多样性
     BATCH_SIZE = 256                # 减小批次大小，降低梯度估计噪声
-    LEARNING_STARTS = 20_000        # 延长预热步数，积累更多高质量样本
+    LEARNING_STARTS = 10_000        # 延长预热步数，积累更多高质量样本
     UPDATES_PER_LEARN = 8           # 固定每轮更新次数，控制UTD比
 
     # ── 优先经验回放（PER）────────────────────────────────────────────
