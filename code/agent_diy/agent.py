@@ -10,10 +10,19 @@ Agent class for Gorge Chase SAC — distributed-compatible.
 峡谷追猎 SAC Agent（兼容分布式架构）。
 
 分布式角色说明：
-  Actor  进程：调用 predict() 采样动作，observation_process() 提取特征，
-               workflow 收集样本后调用 send_sample_data() 发送给 Learner
-  Learner进程：框架调用 learn(list_sample_data) 触发 SAC 更新
-               完成后调用 save_model() 写入共享存储供 Actor 拉取
+  Actor 进程：
+    - observation_process() 提取特征
+    - predict() 采样动作
+    - workflow 收集整局样本后调用 send_sample_data() 发给 Learner
+
+  Learner 进程：
+    - 框架调用 learn(list_sample_data) 触发 SAC 更新
+    - 完成后调用 save_model() 写入共享存储供 Actor 拉取
+
+路线B语义说明：
+  - preprocessor.py 返回的 reward 是训练主奖励
+  - workflow.py 直接使用该 reward 作为 Learner 训练目标
+  - total_score 仅用于评估/日志/监控，不直接作为训练 reward
 """
 
 import os
@@ -35,27 +44,29 @@ from agent_diy.model.model import Actor, Critic
 class Agent(BaseAgent):
     def __init__(self, agent_type="player", device=None, logger=None, monitor=None):
         torch.manual_seed(0)
+        np.random.seed(0)
         self.device = device
 
         input_dim = Config.DIM_OF_OBSERVATION
-        hidden_dim = 512   # 增大隐藏层（原256），提升复杂空间感知能力
-        mid_dim = 256      # 增大中间层（原128），匹配102维输入+49维地图特征
+        hidden_dim = 512
+        mid_dim = 256
         action_num = Config.ACTION_NUM
 
         # Actor 网络（Actor/Learner 进程均持有，Actor 侧只做推理）
         self.model = Actor(input_dim, hidden_dim, mid_dim, action_num).to(device)
-        # Critic 网络（Learner 侧参与训练，Actor 侧不使用）
+
+        # Critic 网络（Learner 侧参与训练，Actor 侧不直接使用）
         self.critic = Critic(input_dim, hidden_dim, mid_dim, action_num).to(device)
 
-        # Algorithm 持有双Q网络、目标网络、优化器、ReplayBuffer（均在 Learner 侧生效）
+        # Algorithm 持有双Q网络、目标网络、优化器、ReplayBuffer（Learner侧生效）
         self.algorithm = Algorithm(self.model, self.critic, device, logger, monitor)
 
         self.preprocessor = Preprocessor()
         self.last_action = -1
         self.logger = logger
         self.monitor = monitor
+
         super().__init__(agent_type, device, logger, monitor)
-        # 断点续训已移除：训练成本低，每次从随机初始化开始更干净
 
     # ── 每局重置（Actor 侧）──────────────────────────────────────────
     def reset(self, env_obs=None):
@@ -64,6 +75,13 @@ class Agent(BaseAgent):
 
     # ── 观测处理（Actor 侧）──────────────────────────────────────────
     def observation_process(self, env_obs, preprocessor=None, extra_info=None):
+        """
+        提取特征、合法动作以及训练奖励。
+
+        路线B中：
+          reward 由 preprocessor.py 定义，
+          workflow.py 会直接使用这里返回的 reward 作为训练目标。
+        """
         feature, legal_action, reward = self.preprocessor.feature_process(
             env_obs, self.last_action
         )
@@ -80,20 +98,29 @@ class Agent(BaseAgent):
         la_t = torch.tensor(np.array([legal_action]), dtype=torch.float32).to(self.device)
 
         with torch.no_grad():
-            probs = self.model(obs_t, la_t)[0].cpu().numpy()  # (A,)
+            probs = self.model(obs_t, la_t)[0].cpu().numpy()  # [A]
 
-        # ε-greedy 探索：大幅提高随机探索比例，防止Actor锁死
-        if np.random.random() < 0.3:  # 从20%提高到30%随机探索
+        # ε-greedy 探索：防止早期策略锁死
+        if np.random.random() < 0.3:
             legal_actions = np.where(np.array(legal_action) == 1)[0]
             if len(legal_actions) > 0:
                 action = int(np.random.choice(legal_actions))
                 d_action = int(np.argmax(probs))
+
                 probs_out = np.zeros(Config.ACTION_NUM, dtype=np.float32)
                 probs_out[action] = 1.0
-                return [ActData(action=[action], d_action=[d_action], prob=list(probs_out), value=[0.0])]
 
-        # 基于策略的采样，但增加温度系数防止塌缩
-        temperature = 1.5  # 增加温度，提高探索性
+                return [
+                    ActData(
+                        action=[action],
+                        d_action=[d_action],
+                        prob=list(probs_out),
+                        value=[0.0],
+                    )
+                ]
+
+        # 基于策略分布的温度采样，增加探索性
+        temperature = 1.5
         logits = np.log(np.clip(probs, 1e-9, None))
         tempered_logits = logits / temperature
         tempered_probs = np.exp(tempered_logits)
@@ -102,7 +129,14 @@ class Agent(BaseAgent):
         action = int(np.random.choice(len(tempered_probs), p=tempered_probs))
         d_action = int(np.argmax(probs))
 
-        return [ActData(action=[action], d_action=[d_action], prob=list(probs), value=[0.0])]
+        return [
+            ActData(
+                action=[action],
+                d_action=[d_action],
+                prob=list(tempered_probs),   # 记录真实采样分布，更一致
+                value=[0.0],
+            )
+        ]
 
     # ── 评估推理（贪心）─────────────────────────────────────────────
     def exploit(self, env_obs):
@@ -112,26 +146,18 @@ class Agent(BaseAgent):
 
     # ── 训练入口（Learner 侧，由框架调用）────────────────────────────
     def learn(self, list_sample_data):
-        """Train and return loss dict (aligned with PPO interface).
-
-        训练并返回损失字典，字段与PPO对齐：
-          value_loss  → Critic MSE 损失（对应PPO的价值损失）
-          policy_loss → Actor 策略损失（对应PPO的策略损失）
-          entropy_loss→ 策略熵（对应PPO的熵损失）
-          total_loss  → value_loss + policy_loss 聚合
-        """
         results = self.algorithm.learn(list_sample_data)
         if results is not None:
-            # 实时上报到 monitor（与PPO look相同字段）
             if self.monitor:
                 self.monitor.put_data({os.getpid(): results})
             if self.logger:
                 self.logger.info(
                     f"[SAC] train_step:{results['train_step']} "
                     f"total_loss:{results['total_loss']} "
-                    f"value_loss:{results['value_loss']} "
-                    f"policy_loss:{results['policy_loss']} "
-                    f"entropy_loss:{results['entropy_loss']:.3f}"
+                    f"critic_loss:{results['critic_loss']} "
+                    f"actor_loss:{results['actor_loss']} "
+                    f"entropy:{results['entropy']:.3f} "
+                    f"alpha:{results['alpha']:.4f}"
                 )
         return results
 
@@ -141,12 +167,14 @@ class Agent(BaseAgent):
         self.last_action = int(action[0])
         return int(action[0])
 
-    # ── 模型存储（只存 Actor 权重，供 Actor 侧拉取推理）─────────────
+    # ── 模型存储（仅 Actor latest，用于 Actor 拉取推理）─────────────
     def save_model(self, path=None, id="1"):
-        """Save actor weights only.
+        """
+        Save actor weights only.
 
-        断点续训已移除，仅保存 Actor 权重供 Actor 进程 load_model 拉取。
-        减少磁盘 IO，避免影响 Actor 采样效率。
+        注意：
+          这里保存的是 Actor 侧“最新推理模型”，用于 workflow 中定期同步 latest。
+          这不是 Learner 侧完整断点续训存储。
         """
         if path is not None:
             self._model_path = path
@@ -156,14 +184,17 @@ class Agent(BaseAgent):
             {k: v.clone().cpu() for k, v in self.model.state_dict().items()},
             model_file,
         )
+
         if self.logger:
             self.logger.info(f"[SAC] save model {model_file} successfully")
 
     def load_model(self, path=None, id="1"):
-        """Load actor weights only (Actor process inference).
+        """
+        Load actor weights only for inference.
 
-        只加载 Actor 权重用于推理，不恢复优化器/Critic 等训练状态。
-        文件不存在时静默跳过。
+        注意：
+          这里只加载 Actor latest 权重用于推理，
+          不恢复 Critic / Optimizer / alpha 等完整训练状态。
         """
         model_file = f"{path}/model.ckpt-{id}.pkl"
         try:

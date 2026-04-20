@@ -13,66 +13,69 @@ Configuration for Gorge Chase SAC.
 
 class Config:
 
-    # Feature dimensions / 特征维度（共114维）
+    # ── Feature dimensions / 特征维度 ────────────────────────────────
+    # hero(6)
+    # monster1(11)
+    # monster2(11)
+    # treasure(6)
+    # buff(5)
+    # spatial(6 * 21 * 21 = 2646)
+    # legal_action(16)
+    # planning(10)
     FEATURES = [
-        6,    # 英雄自身特征
-        11,   # 怪物1特征（含完整方向角 sin+cos）
-        11,   # 怪物2特征（含完整方向角 sin+cos）
-        6,    # 宝箱特征（含方向向量）
-        5,    # Buff特征（含方向向量）
-        49,   # 局部地图特征（7×7窗口）
-        16,   # 合法动作掩码（16维：8移动+8闪现）
-        10,   # 时序/规划特征（含ETA、逃逸性等）
+        6,
+        11,
+        11,
+        6,
+        5,
+        2646,
+        16,
+        10,
     ]
     FEATURE_SPLIT_SHAPE = FEATURES
-    FEATURE_LEN = sum(FEATURE_SPLIT_SHAPE)   # 114
+    FEATURE_LEN = sum(FEATURE_SPLIT_SHAPE)   # 2711
     DIM_OF_OBSERVATION = FEATURE_LEN
 
-    # Action space / 动作空间：8移动 + 8方向闪现
+    # Action space
     ACTION_NUM = 16
     VALUE_NUM = 1
 
-    # ── SAC 超参数 ─────────────────────────────────────────────────────
-    GAMMA = 0.99                    # 折扣因子
-    INIT_LEARNING_RATE_START = 3e-5  # 降低学习率，提高稳定性 # Actor / Critic 学习率（降低，延缓收敛）
-    INIT_LEARNING_RATE_END = 1e-5   # 学习率衰减终点
-    LR_DECAY_STEPS = 2_000_000      # 延长学习率衰减步数，防止Actor锁死
-    GRAD_CLIP_RANGE = 1.0           # 梯度裁剪
+    # ── SAC 超参数 ─────────────────────────────────────────────────
+    GAMMA = 0.99
+    INIT_LEARNING_RATE_START = 3e-5
+    INIT_LEARNING_RATE_END = 1e-5
+    LR_DECAY_STEPS = 2_000_000
+    GRAD_CLIP_RANGE = 1.0
 
     # 自动熵调整 (auto-alpha tuning)
-    # target_entropy = ratio * log(|A|)，平衡探索与利用
     AUTO_ALPHA = True
-    ALPHA_LR = 3e-3    # 提高学习率，加速α调节响应
-    TARGET_ENTROPY_RATIO = -0.9  # 修正符号，符合SAC理论: H_target = -log(action_dim)     # 进一步提高目标熵，抑制策略过早塌缩
+    ALPHA_LR = 3e-4
+    TARGET_ENTROPY_RATIO = 0.9
+    # 实际 target_entropy 在 algorithm.py 中写成：
+    # -TARGET_ENTROPY_RATIO * log(|A|)
 
-    # Soft target update / 软更新系数
-    TAU = 0.005                     # 目标网络软更新系数
+    # Soft target update
+    TAU = 0.005
 
-    # Replay buffer / 经验回放池
-    REPLAY_BUFFER_SIZE = 200_000    # 增大缓冲区容量，提高样本多样性
-    BATCH_SIZE = 256                # 减小批次大小，降低梯度估计噪声
-    LEARNING_STARTS = 10_000        # 延长预热步数，积累更多高质量样本
-    UPDATES_PER_LEARN = 8           # 固定每轮更新次数，控制UTD比
+    # Replay buffer
+    REPLAY_BUFFER_SIZE = 200_000
+    BATCH_SIZE = 256
+    LEARNING_STARTS = 15_000
+    UPDATES_PER_LEARN = 4
 
-    # ── 优先经验回放（PER）────────────────────────────────────────────
-    PER_ALPHA = 0.3                 # 优先级指数（降低，增加采样多样性）
-    PER_BETA_START = 0.4            # IS权重初始值（逐渐增至1消除偏差）
-    PER_BETA_FRAMES = 100_000       # β增长至1的帧数
+    # PER
+    PER_ALPHA = 0.4
+    PER_BETA_START = 0.4
+    PER_BETA_FRAMES = 150_000
 
-    # ── 混合精度训练（AMP）────────────────────────────────────────────
-    USE_AMP = True                  # 启用混合精度训练（GPU加速）
+    # AMP
+    USE_AMP = True
 
-    # α约束范围（自动熵调节）- 防止过早衰减
-    ALPHA_MIN = 0.2    # 提高下限，防止α过早衰减
-    ALPHA_MAX = 1.0  # 降低上限，防止过度探索
+    # α 约束范围
+    ALPHA_MIN = 0.05
+    ALPHA_MAX = 1.0
 
-    # 训练稳定性（已移除reward scaling操作）
-    # REWARD_CLIP = 2.0  # 已移除
-    # TARGET_Q_CLIP = 30.0  # 已移除
-    # SCORE_REWARD_SCALE = 50.0  # 已移除
-    # SHAPING_REWARD_WEIGHT = 0.2  # 已移除
-
-    # ── 兼容性保留（部分接口仍会读取）────────────────────────────────
+    # ── 兼容性保留 ────────────────────────────────────────────────
     LAMDA = 0.95
     BETA_START = 0.01
     CLIP_PARAM = 0.2
