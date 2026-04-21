@@ -45,6 +45,9 @@ class Config:
     GAMMA = 0.99
     TAU = 0.005
     ALPHA = 0.5
+    AUTO_ALPHA = True
+    TARGET_ENTROPY = 2.0
+    ALPHA_LR = 1e-4
 
     # Optimizer
     INIT_LEARNING_RATE_START = 2e-4

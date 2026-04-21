@@ -14,6 +14,7 @@ import copy
 import os
 import time
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from agent_diy.conf.conf import Config
@@ -32,6 +33,14 @@ class Algorithm:
         self.gamma = Config.GAMMA
         self.tau = Config.TAU
         self.alpha = Config.ALPHA
+        self.auto_alpha = getattr(Config, "AUTO_ALPHA", False)
+        self.target_entropy = getattr(Config, "TARGET_ENTROPY", 2.0)
+        self.alpha_loss_value = 0.0
+        if self.auto_alpha:
+            init_alpha = max(float(Config.ALPHA), 1e-6)
+            self.log_alpha = torch.tensor(np.log(init_alpha), device=self.device, requires_grad=True)
+            self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=getattr(Config, "ALPHA_LR", 1e-4))
+            self.alpha = float(self.log_alpha.exp().item())
 
         self.last_report_monitor_time = 0
         self.train_step = 0
@@ -70,6 +79,13 @@ class Algorithm:
         total_loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(self.parameters, Config.GRAD_CLIP_RANGE)
         self.optimizer.step()
+        if self.auto_alpha:
+            self.alpha_optimizer.zero_grad()
+            alpha_loss = (self.log_alpha.exp() * (self.target_entropy - info["entropy"]).detach()).mean()
+            alpha_loss.backward()
+            self.alpha_optimizer.step()
+            self.alpha = float(self.log_alpha.exp().item())
+            self.alpha_loss_value = float(alpha_loss.item())
         self._soft_update_target()
         self.train_step += 1
 
@@ -88,6 +104,8 @@ class Algorithm:
                 "legal_action_count": round(legal_action.sum(dim=1).float().mean().item(), 4),
                 "done_rate": round(done.float().mean().item(), 4),
                 "grad_norm": round(float(grad_norm.item() if hasattr(grad_norm, "item") else grad_norm), 4),
+                "alpha": round(self.alpha, 4),
+                "alpha_loss": round(self.alpha_loss_value, 4),
             }
             if self.logger:
                 self.logger.info(

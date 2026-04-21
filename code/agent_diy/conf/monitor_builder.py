@@ -108,6 +108,26 @@ def build_monitor():
         )
         .end_panel()
         .add_panel(
+            name="温度系数",
+            name_en="alpha",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="alpha",
+            expr="avg(alpha{})",
+        )
+        .end_panel()
+        .add_panel(
+            name="温度损失",
+            name_en="alpha_loss",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="alpha_loss",
+            expr="avg(alpha_loss{})",
+        )
+        .end_panel()
+        .add_panel(
             name="合法动作数",
             name_en="legal_action_count",
             type="line",
