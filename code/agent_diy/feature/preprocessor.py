@@ -10,6 +10,8 @@ Feature preprocessor and reward design for Gorge Chase PPO.
 峡谷追猎 PPO 特征预处理与奖励设计。
 """
 
+from collections import deque
+
 import numpy as np
 from agent_diy.conf.conf import Config
 
@@ -45,6 +47,14 @@ class Preprocessor:
         self.step_no = 0
         self.max_step = 200
         self.last_min_monster_dist_norm = 0.5
+        self.last_min_treasure_dist_norm = 1.0
+        self.last_step_score = 0.0
+        self.last_treasure_score = 0.0
+        self.last_buff_count = 0.0
+        self.last_hero_pos = None
+        self.last_flash_cd = 0.0
+        self.visit_counter = {}
+        self.recent_positions = deque(maxlen=20)
 
     def feature_process(self, env_obs, last_action):
         """Process env_obs into feature vector, legal_action mask, and reward.
@@ -97,6 +107,18 @@ class Preprocessor:
             else:
                 monster_feats.append(np.zeros(5, dtype=np.float32))
 
+<<<<<<< codex/analyze-sac-design-for-training-framework-08dzjs
+        # Out-of-vision monster relative info (2 x [dx, dz, dist]) / 视野外怪物相对信息
+        rel_monster_feat = []
+        for i in range(2):
+            if i < len(monsters):
+                rel_monster_feat.extend(self._extract_monster_relative(monsters[i], hero_pos))
+            else:
+                rel_monster_feat.extend([0.0, 0.0, 1.0])
+        rel_monster_feat = np.array(rel_monster_feat, dtype=np.float32)
+
+=======
+>>>>>>> simple_sac
         # Spatial map features (C x 21 x 21) / 空间特征图（多通道）
         # channel 0: hero, 1: monster, 2: treasure, 3: obstacle
         map_tensor = np.zeros((MAP_CHANNELS, LOCAL_MAP_WINDOW, LOCAL_MAP_WINDOW), dtype=np.float32)
@@ -168,6 +190,7 @@ class Preprocessor:
                 hero_feat,
                 monster_feats[0],
                 monster_feats[1],
+                rel_monster_feat,
                 map_feat,
                 np.array(legal_action, dtype=np.float32),
                 progress_feat,
@@ -176,16 +199,95 @@ class Preprocessor:
 
         # Step reward / 即时奖励
         cur_min_dist_norm = 1.0
+        cur_second_dist_norm = 1.0
+        visible_monster_dists = []
         for m_feat in monster_feats:
             if m_feat[0] > 0:
                 cur_min_dist_norm = min(cur_min_dist_norm, m_feat[4])
+                visible_monster_dists.append(m_feat[4])
+        if len(visible_monster_dists) >= 2:
+            cur_second_dist_norm = sorted(visible_monster_dists)[1]
 
+        cur_min_treasure_dist_norm = 1.0
+        for t in treasure_list:
+            if not isinstance(t, dict):
+                continue
+            t_pos = t.get("pos", {})
+            tx, tz = t_pos.get("x"), t_pos.get("z")
+            if tx is None or tz is None:
+                continue
+            raw_dist = np.sqrt((hero_pos["x"] - tx) ** 2 + (hero_pos["z"] - tz) ** 2)
+            cur_min_treasure_dist_norm = min(cur_min_treasure_dist_norm, _norm(raw_dist, MAP_SIZE * 1.41))
+
+        # Score-like signals / 分数型信号
+        step_score = float(env_info.get("step_score", env_info.get("score", self.last_step_score)))
+        treasure_score = float(env_info.get("treasure_score", self.last_treasure_score))
+        buff_count = float(env_info.get("buff_count", env_info.get("buff_num", self.last_buff_count)))
+
+        # Dense rewards / 稠密奖励
         survive_reward = 0.01
-        dist_shaping = 0.1 * (cur_min_dist_norm - self.last_min_monster_dist_norm)
+        step_score_reward = 0.02 if step_score > self.last_step_score else 0.0
+        dist_shaping = 0.12 * (cur_min_dist_norm - self.last_min_monster_dist_norm)
+        treasure_approach_reward = 0.06 * (self.last_min_treasure_dist_norm - cur_min_treasure_dist_norm)
+
+        # Speed-up stage shaping / 怪物加速前后强化
+        monster_speedup_step = float(env_info.get("monster_speedup", 500))
+        near_speedup_ratio = _norm(self.step_no, max(monster_speedup_step, 1.0))
+        near_speedup_bonus = 0.04 * near_speedup_ratio * max(0.0, cur_min_dist_norm - 0.25)
+        late_survival_bonus = 0.06 * max(0.0, near_speedup_ratio - 0.6) * max(0.0, cur_min_dist_norm - 0.2)
+
+        # Corridor openness reward / corridor开阔奖励
+        corridor_reward = 0.03 * self._compute_openness(obstacle_channel)
+
+        # Sparse rewards / 稀疏奖励
+        treasure_score_reward = 0.2 if treasure_score > self.last_treasure_score else 0.0
+        buff_reward = 0.15 if buff_count > self.last_buff_count else 0.0
+
+        # Risk penalties / 风险惩罚
+        danger_penalty = -0.18 * max(0.0, 0.25 - cur_min_dist_norm)
+        second_monster_penalty = -0.08 * max(0.0, 0.28 - cur_second_dist_norm)
+        corner_penalty = -0.08 * max(0.0, 0.2 - self._compute_openness(obstacle_channel))
+        encircle_penalty = -0.06 * self._compute_encircle_penalty(hero_pos, monsters)
+
+        # Movement penalties / 移动相关惩罚
+        invalid_move_penalty = self._compute_invalid_move_penalty(hero_pos)
+        repeat_explore_penalty = self._compute_repeat_penalty(hero_pos)
+
+        # Flash-related reward / 闪现相关奖励
+        flash_escape_reward, flash_abuse_penalty = self._compute_flash_reward(
+            hero.get("flash_cooldown", 0.0), cur_min_dist_norm, obstacle_channel
+        )
+
+        reward_value = (
+            survive_reward
+            + step_score_reward
+            + treasure_score_reward
+            + buff_reward
+            + treasure_approach_reward
+            + dist_shaping
+            + near_speedup_bonus
+            + late_survival_bonus
+            + corridor_reward
+            + encircle_penalty
+            + corner_penalty
+            + danger_penalty
+            + invalid_move_penalty
+            + repeat_explore_penalty
+            + flash_escape_reward
+            + flash_abuse_penalty
+            + second_monster_penalty
+        )
+        reward_value = float(np.clip(reward_value, -1.0, 1.0))
 
         self.last_min_monster_dist_norm = cur_min_dist_norm
+        self.last_min_treasure_dist_norm = cur_min_treasure_dist_norm
+        self.last_step_score = step_score
+        self.last_treasure_score = treasure_score
+        self.last_buff_count = buff_count
+        self.last_flash_cd = float(hero.get("flash_cooldown", 0.0))
+        self.last_hero_pos = (float(hero_pos.get("x", 0.0)), float(hero_pos.get("z", 0.0)))
 
-        reward = [survive_reward + dist_shaping]
+        reward = [reward_value]
 
         return feature, legal_action, reward
 
@@ -197,3 +299,83 @@ class Preprocessor:
         row = int(np.round((dz / MAP_SIZE) * (LOCAL_MAP_WINDOW - 1))) + radius
         if 0 <= row < LOCAL_MAP_WINDOW and 0 <= col < LOCAL_MAP_WINDOW:
             channel[row, col] = 1.0
+<<<<<<< codex/analyze-sac-design-for-training-framework-08dzjs
+
+    def _compute_openness(self, obstacle_channel):
+        passable = 1.0 - obstacle_channel
+        center = LOCAL_MAP_WINDOW // 2
+        inner = passable[max(0, center - 2) : center + 3, max(0, center - 2) : center + 3]
+        mid = passable[max(0, center - 4) : center + 5, max(0, center - 4) : center + 5]
+        inner_ratio = float(np.mean(inner)) if inner.size > 0 else 0.0
+        mid_ratio = float(np.mean(mid)) if mid.size > 0 else 0.0
+        return 0.6 * inner_ratio + 0.4 * mid_ratio
+
+    def _compute_encircle_penalty(self, hero_pos, monsters):
+        visible = []
+        hx, hz = float(hero_pos.get("x", 0.0)), float(hero_pos.get("z", 0.0))
+        for m in monsters:
+            if float(m.get("is_in_view", 0)) <= 0:
+                continue
+            mp = m.get("pos", {})
+            dx = float(mp.get("x", 0.0)) - hx
+            dz = float(mp.get("z", 0.0)) - hz
+            dist = np.sqrt(dx * dx + dz * dz) + 1e-6
+            visible.append((dx / dist, dz / dist, dist))
+        if len(visible) < 2:
+            return 0.0
+        dot = visible[0][0] * visible[1][0] + visible[0][1] * visible[1][1]
+        close_factor = max(0.0, 1.0 - min(visible[0][2], visible[1][2]) / (MAP_SIZE * 0.35))
+        return max(0.0, -dot) * close_factor
+
+    def _compute_invalid_move_penalty(self, hero_pos):
+        hx, hz = float(hero_pos.get("x", 0.0)), float(hero_pos.get("z", 0.0))
+        if self.last_hero_pos is None:
+            return 0.0
+        dx = hx - self.last_hero_pos[0]
+        dz = hz - self.last_hero_pos[1]
+        disp = np.sqrt(dx * dx + dz * dz)
+        return -0.08 if disp < 0.2 else 0.0
+
+    def _compute_repeat_penalty(self, hero_pos):
+        hx, hz = float(hero_pos.get("x", 0.0)), float(hero_pos.get("z", 0.0))
+        cell = (int(hx // 4), int(hz // 4))
+        self.visit_counter[cell] = self.visit_counter.get(cell, 0) + 1
+        self.recent_positions.append(cell)
+        unique_ratio = len(set(self.recent_positions)) / max(1, len(self.recent_positions))
+        revisit = self.visit_counter[cell]
+        return -0.04 * max(0.0, revisit / 20.0) - 0.05 * max(0.0, 0.5 - unique_ratio)
+
+    def _compute_flash_reward(self, flash_cd, cur_min_dist_norm, obstacle_channel):
+        flash_cd = float(flash_cd)
+        flashed = flash_cd > self.last_flash_cd + 100.0
+        if not flashed:
+            return 0.0, 0.0
+        openness = self._compute_openness(obstacle_channel)
+        escaped = cur_min_dist_norm - self.last_min_monster_dist_norm
+        if escaped > 0.05 or openness > 0.6:
+            return 0.2, 0.0
+        return 0.0, -0.15
+
+    def _extract_monster_relative(self, monster, hero_pos):
+        rel = monster.get("relative_pos", {}) if isinstance(monster, dict) else {}
+        dx = rel.get("x", rel.get("dx", monster.get("relative_x", None)))
+        dz = rel.get("z", rel.get("dz", monster.get("relative_z", None)))
+        dist = rel.get("dist", rel.get("distance", monster.get("relative_distance", None)))
+
+        if dx is None or dz is None:
+            m_pos = monster.get("pos", {}) if isinstance(monster, dict) else {}
+            if "x" in m_pos and "z" in m_pos:
+                dx = float(m_pos["x"]) - float(hero_pos.get("x", 0.0))
+                dz = float(m_pos["z"]) - float(hero_pos.get("z", 0.0))
+            else:
+                dx, dz = 0.0, 0.0
+
+        if dist is None:
+            dist = np.sqrt(float(dx) * float(dx) + float(dz) * float(dz))
+
+        dx_norm = float(np.clip(float(dx) / MAP_SIZE, -1.0, 1.0))
+        dz_norm = float(np.clip(float(dz) / MAP_SIZE, -1.0, 1.0))
+        dist_norm = _norm(float(dist), MAP_SIZE * 1.41)
+        return [dx_norm, dz_norm, dist_norm]
+=======
+>>>>>>> simple_sac

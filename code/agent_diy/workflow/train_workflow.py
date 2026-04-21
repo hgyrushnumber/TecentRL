@@ -157,11 +157,14 @@ class EpisodeRunner:
                     total_score = env_info.get("total_score", 0)
 
                     if terminated:
-                        final_reward[0] = -10.0
-                        result_str = "FAIL"
-                    else:
+                        final_reward[0] = -12.0
+                        result_str = "DEAD"
+                    elif truncated:
                         final_reward[0] = 10.0
-                        result_str = "WIN"
+                        result_str = "TIMEOUT_DONE"
+                    else:
+                        final_reward[0] = -2.0
+                        result_str = "ABNORMAL"
 
                     self.logger.info(
                         f"[GAMEOVER] episode:{self.episode_cnt} steps:{step} "

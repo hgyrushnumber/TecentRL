@@ -17,11 +17,12 @@ class Config:
     MAP_CHANNELS = 4  # hero, monster, treasure, obstacle
     MAP_FEATURE_DIM = LOCAL_MAP_WINDOW * LOCAL_MAP_WINDOW * MAP_CHANNELS
 
-    # Feature dimensions / 特征维度（共1788维）
+    # Feature dimensions / 特征维度（共1794维）
     FEATURES = [
         4,
         5,
         5,
+        6,  # out-of-vision monster relative info (2 monsters x [dx, dz, dist])
         MAP_FEATURE_DIM,
         8,
         2,
