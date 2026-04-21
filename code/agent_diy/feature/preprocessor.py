@@ -107,6 +107,7 @@ class Preprocessor:
             else:
                 monster_feats.append(np.zeros(5, dtype=np.float32))
 
+<<<<<<< codex/analyze-sac-design-for-training-framework-08dzjs
         # Out-of-vision monster relative info (2 x [dx, dz, dist]) / 视野外怪物相对信息
         rel_monster_feat = []
         for i in range(2):
@@ -116,6 +117,8 @@ class Preprocessor:
                 rel_monster_feat.extend([0.0, 0.0, 1.0])
         rel_monster_feat = np.array(rel_monster_feat, dtype=np.float32)
 
+=======
+>>>>>>> simple_sac
         # Spatial map features (C x 21 x 21) / 空间特征图（多通道）
         # channel 0: hero, 1: monster, 2: treasure, 3: obstacle
         map_tensor = np.zeros((MAP_CHANNELS, LOCAL_MAP_WINDOW, LOCAL_MAP_WINDOW), dtype=np.float32)
@@ -296,6 +299,7 @@ class Preprocessor:
         row = int(np.round((dz / MAP_SIZE) * (LOCAL_MAP_WINDOW - 1))) + radius
         if 0 <= row < LOCAL_MAP_WINDOW and 0 <= col < LOCAL_MAP_WINDOW:
             channel[row, col] = 1.0
+<<<<<<< codex/analyze-sac-design-for-training-framework-08dzjs
 
     def _compute_openness(self, obstacle_channel):
         passable = 1.0 - obstacle_channel
@@ -373,3 +377,5 @@ class Preprocessor:
         dz_norm = float(np.clip(float(dz) / MAP_SIZE, -1.0, 1.0))
         dist_norm = _norm(float(dist), MAP_SIZE * 1.41)
         return [dx_norm, dz_norm, dist_norm]
+=======
+>>>>>>> simple_sac
