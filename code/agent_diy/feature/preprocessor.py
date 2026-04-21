@@ -56,6 +56,7 @@ class Preprocessor:
         self.visit_counter = {}
         self.recent_positions = deque(maxlen=20)
         self.last_reward_components = {}
+        self.last_survival_stage = 0
 
     def feature_process(self, env_obs, last_action):
         """Process env_obs into feature vector, legal_action mask, and reward.
@@ -228,6 +229,11 @@ class Preprocessor:
         dist_shaping = 0.08 * (cur_min_dist_norm - self.last_min_monster_dist_norm)
         treasure_approach_reward = 0.08 * (self.last_min_treasure_dist_norm - cur_min_treasure_dist_norm)
 
+        # Progressive survival milestone reward / 生存里程碑递进奖励（替代终局大额奖励）
+        current_stage = int(min(10, self.step_no // 100))
+        stage_progress_reward = 0.04 * max(0, current_stage - self.last_survival_stage)
+        self.last_survival_stage = current_stage
+
         # Speed-up stage shaping / 怪物加速前后强化
         monster_speedup_step = float(env_info.get("monster_speedup", 500))
         near_speedup_ratio = _norm(self.step_no, max(monster_speedup_step, 1.0))
@@ -262,6 +268,7 @@ class Preprocessor:
             + treasure_score_reward
             + buff_reward
             + treasure_approach_reward
+            + stage_progress_reward
             + dist_shaping
             + near_speedup_bonus
             + late_survival_bonus
@@ -282,6 +289,7 @@ class Preprocessor:
             "treasure_score_reward": float(treasure_score_reward),
             "buff_reward": float(buff_reward),
             "treasure_approach_reward": float(treasure_approach_reward),
+            "stage_progress_reward": float(stage_progress_reward),
             "dist_shaping": float(dist_shaping),
             "near_speedup_bonus": float(near_speedup_bonus),
             "late_survival_bonus": float(late_survival_bonus),

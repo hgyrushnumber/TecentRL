@@ -161,13 +161,10 @@ class EpisodeRunner:
                     total_score = env_info.get("total_score", 0)
 
                     if terminated:
-                        final_reward[0] = -8.0
                         result_str = "DEAD"
                     elif truncated:
-                        final_reward[0] = 12.0
                         result_str = "TIMEOUT_DONE"
                     else:
-                        final_reward[0] = -2.0
                         result_str = "ABNORMAL"
 
                     self.logger.info(
@@ -188,9 +185,6 @@ class EpisodeRunner:
                 collector.append(frame)
 
                 if done:
-                    if collector:
-                        collector[-1].reward = collector[-1].reward + final_reward
-
                     now = time.time()
                     if now - self.last_report_monitor_time >= 60 and self.monitor:
                         monitor_data = {
