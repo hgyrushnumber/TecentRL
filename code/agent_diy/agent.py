@@ -18,11 +18,11 @@ torch.set_num_interop_threads(1)
 import numpy as np
 from kaiwudrl.interface.agent import BaseAgent
 
-from agent_ppo.algorithm.algorithm import Algorithm
-from agent_ppo.conf.conf import Config
-from agent_ppo.feature.definition import ActData, ObsData
-from agent_ppo.feature.preprocessor import Preprocessor
-from agent_ppo.model.model import Model
+from agent_diy.algorithm.algorithm import Algorithm
+from agent_diy.conf.conf import Config
+from agent_diy.feature.definition import ActData, ObsData
+from agent_diy.feature.preprocessor import Preprocessor
+from agent_diy.model.model import Model
 
 
 class Agent(BaseAgent):
@@ -55,7 +55,10 @@ class Agent(BaseAgent):
             feature=list(feature),
             legal_action=legal_action,
         )
-        remain_info = {"reward": reward}
+        remain_info = {
+            "reward": reward,
+            "reward_components": self.preprocessor.get_last_reward_components(),
+        }
         return obs_data, remain_info
 
     def predict(self, list_obs_data):
@@ -63,9 +66,15 @@ class Agent(BaseAgent):
         legal_action = list_obs_data[0].legal_action
 
         probs, q1, q2 = self._run_model(feature, legal_action)
+        legal_mask = np.array(legal_action, dtype=np.float32)
+        min_q = np.minimum(q1, q2)
+        q_probs = self._legal_soft_max(min_q, legal_mask)
+        mixed_probs = 0.5 * probs + 0.5 * q_probs
+        mixed_probs = mixed_probs / (np.sum(mixed_probs) + 1e-8)
+        masked_q = np.where(legal_mask > 0, min_q, -1e9)
 
-        action = int(np.random.choice(len(probs), p=probs))
-        d_action = int(np.argmax(probs))
+        action = int(np.random.choice(len(mixed_probs), p=mixed_probs))
+        d_action = int(np.argmax(masked_q))
 
         return [
             ActData(
@@ -101,14 +110,25 @@ class Agent(BaseAgent):
         return int(action[0])
 
     def _run_model(self, feature, legal_action):
+        self.model.set_eval_mode()
         obs_tensor = torch.tensor(np.array([feature]), dtype=torch.float32).to(self.device)
         legal_tensor = torch.tensor(np.array([legal_action]), dtype=torch.float32).to(self.device)
 
         with torch.no_grad():
-            probs = self.model(obs_tensor, legal_tensor)[0].cpu().numpy()
-            q1, q2 = self.critic(obs_tensor, legal_tensor)
+            logits, q1, q2 = self.model(obs_tensor, inference=True)
+            probs = self._masked_softmax_torch(logits, legal_tensor)[0].cpu().numpy()
+            q1 = q1[0].cpu().numpy()
+            q2 = q2[0].cpu().numpy()
 
         return probs, q1, q2
+
+    def _masked_softmax_torch(self, logits, legal_action):
+        masked_logits = logits.masked_fill(legal_action <= 0, -1e9)
+        probs = torch.softmax(masked_logits, dim=1)
+        invalid_mask = legal_action.sum(dim=1, keepdim=True) <= 0
+        if invalid_mask.any():
+            probs[invalid_mask.squeeze(1)] = 1.0 / probs.size(1)
+        return probs
 
     def _legal_soft_max(self, input_hidden, legal_action):
         if np.sum(legal_action) <= 0:
