@@ -55,7 +55,10 @@ class Agent(BaseAgent):
             feature=list(feature),
             legal_action=legal_action,
         )
-        remain_info = {"reward": reward}
+        remain_info = {
+            "reward": reward,
+            "reward_components": self.preprocessor.get_last_reward_components(),
+        }
         return obs_data, remain_info
 
     def predict(self, list_obs_data):

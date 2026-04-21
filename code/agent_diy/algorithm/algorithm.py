@@ -68,7 +68,7 @@ class Algorithm:
         )
 
         total_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.parameters, Config.GRAD_CLIP_RANGE)
+        grad_norm = torch.nn.utils.clip_grad_norm_(self.parameters, Config.GRAD_CLIP_RANGE)
         self.optimizer.step()
         self._soft_update_target()
         self.train_step += 1
@@ -81,6 +81,13 @@ class Algorithm:
                 "policy_loss": round(info["actor_loss"].item(), 4),
                 "entropy_loss": round(info["entropy"].item(), 4),
                 "reward": round(reward.mean().item(), 4),
+                "q_target_mean": round(info["q_target_mean"].item(), 4),
+                "q1_mean": round(info["q1_mean"].item(), 4),
+                "q2_mean": round(info["q2_mean"].item(), 4),
+                "q_gap": round(info["q_gap"].item(), 4),
+                "legal_action_count": round(legal_action.sum(dim=1).float().mean().item(), 4),
+                "done_rate": round(done.float().mean().item(), 4),
+                "grad_norm": round(float(grad_norm.item() if hasattr(grad_norm, "item") else grad_norm), 4),
             }
             if self.logger:
                 self.logger.info(
@@ -123,6 +130,10 @@ class Algorithm:
             "critic_loss": critic_loss,
             "actor_loss": actor_loss,
             "entropy": entropy,
+            "q_target_mean": q_target.mean(),
+            "q1_mean": q1_a.mean(),
+            "q2_mean": q2_a.mean(),
+            "q_gap": torch.abs(q1_a - q2_a).mean(),
         }
 
     def _masked_softmax(self, logits, legal_action):

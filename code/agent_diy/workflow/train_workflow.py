@@ -99,6 +99,7 @@ class EpisodeRunner:
             done = False
             step = 0
             total_reward = 0.0
+            reward_component_sums = {}
 
             self.logger.info(f"Episode {self.episode_cnt} start")
 
@@ -150,6 +151,9 @@ class EpisodeRunner:
 
                 reward = np.array(next_remain_info.get("reward", [0.0]), dtype=np.float32)
                 total_reward += float(reward[0])
+                reward_components = next_remain_info.get("reward_components", {})
+                for k, v in reward_components.items():
+                    reward_component_sums[k] = reward_component_sums.get(k, 0.0) + float(v)
 
                 final_reward = np.zeros(1, dtype=np.float32)
                 if done:
@@ -157,10 +161,10 @@ class EpisodeRunner:
                     total_score = env_info.get("total_score", 0)
 
                     if terminated:
-                        final_reward[0] = -12.0
+                        final_reward[0] = -8.0
                         result_str = "DEAD"
                     elif truncated:
-                        final_reward[0] = 10.0
+                        final_reward[0] = 12.0
                         result_str = "TIMEOUT_DONE"
                     else:
                         final_reward[0] = -2.0
@@ -193,6 +197,12 @@ class EpisodeRunner:
                             "reward": round(total_reward + float(final_reward[0]), 4),
                             "episode_steps": step,
                             "episode_cnt": self.episode_cnt,
+                            "final_reward": round(float(final_reward[0]), 4),
+                            "comp_survive": round(reward_component_sums.get("survive_reward", 0.0), 4),
+                            "comp_treasure_score": round(reward_component_sums.get("treasure_score_reward", 0.0), 4),
+                            "comp_danger_penalty": round(reward_component_sums.get("danger_penalty", 0.0), 4),
+                            "comp_dist_shaping": round(reward_component_sums.get("dist_shaping", 0.0), 4),
+                            "comp_repeat_penalty": round(reward_component_sums.get("repeat_explore_penalty", 0.0), 4),
                         }
                         self.monitor.put_data({os.getpid(): monitor_data})
                         self.last_report_monitor_time = now

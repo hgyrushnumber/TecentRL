@@ -55,6 +55,7 @@ class Preprocessor:
         self.last_flash_cd = 0.0
         self.visit_counter = {}
         self.recent_positions = deque(maxlen=20)
+        self.last_reward_components = {}
 
     def feature_process(self, env_obs, last_action):
         """Process env_obs into feature vector, legal_action mask, and reward.
@@ -107,7 +108,6 @@ class Preprocessor:
             else:
                 monster_feats.append(np.zeros(5, dtype=np.float32))
 
-<<<<<<< codex/analyze-sac-design-for-training-framework-08dzjs
         # Out-of-vision monster relative info (2 x [dx, dz, dist]) / 视野外怪物相对信息
         rel_monster_feat = []
         for i in range(2):
@@ -117,8 +117,6 @@ class Preprocessor:
                 rel_monster_feat.extend([0.0, 0.0, 1.0])
         rel_monster_feat = np.array(rel_monster_feat, dtype=np.float32)
 
-=======
->>>>>>> simple_sac
         # Spatial map features (C x 21 x 21) / 空间特征图（多通道）
         # channel 0: hero, 1: monster, 2: treasure, 3: obstacle
         map_tensor = np.zeros((MAP_CHANNELS, LOCAL_MAP_WINDOW, LOCAL_MAP_WINDOW), dtype=np.float32)
@@ -166,18 +164,18 @@ class Preprocessor:
         map_tensor[3] = obstacle_channel
         map_feat = map_tensor.reshape(-1)
 
-        # Legal action mask (8D) / 合法动作掩码
-        legal_action = [1] * 8
+        # Legal action mask (16D) / 合法动作掩码
+        legal_action = [1] * 16
         if isinstance(legal_act_raw, list) and legal_act_raw:
             if isinstance(legal_act_raw[0], bool):
-                for j in range(min(8, len(legal_act_raw))):
+                for j in range(min(16, len(legal_act_raw))):
                     legal_action[j] = int(legal_act_raw[j])
             else:
-                valid_set = {int(a) for a in legal_act_raw if int(a) < 8}
-                legal_action = [1 if j in valid_set else 0 for j in range(8)]
+                valid_set = {int(a) for a in legal_act_raw if int(a) < 16}
+                legal_action = [1 if j in valid_set else 0 for j in range(16)]
 
         if sum(legal_action) == 0:
-            legal_action = [1] * 8
+            legal_action = [1] * 16
 
         # Progress features (2D) / 进度特征
         step_norm = _norm(self.step_no, self.max_step)
@@ -226,28 +224,28 @@ class Preprocessor:
 
         # Dense rewards / 稠密奖励
         survive_reward = 0.01
-        step_score_reward = 0.02 if step_score > self.last_step_score else 0.0
-        dist_shaping = 0.12 * (cur_min_dist_norm - self.last_min_monster_dist_norm)
-        treasure_approach_reward = 0.06 * (self.last_min_treasure_dist_norm - cur_min_treasure_dist_norm)
+        step_score_reward = 0.05 if step_score > self.last_step_score else 0.0
+        dist_shaping = 0.08 * (cur_min_dist_norm - self.last_min_monster_dist_norm)
+        treasure_approach_reward = 0.08 * (self.last_min_treasure_dist_norm - cur_min_treasure_dist_norm)
 
         # Speed-up stage shaping / 怪物加速前后强化
         monster_speedup_step = float(env_info.get("monster_speedup", 500))
         near_speedup_ratio = _norm(self.step_no, max(monster_speedup_step, 1.0))
-        near_speedup_bonus = 0.04 * near_speedup_ratio * max(0.0, cur_min_dist_norm - 0.25)
-        late_survival_bonus = 0.06 * max(0.0, near_speedup_ratio - 0.6) * max(0.0, cur_min_dist_norm - 0.2)
+        near_speedup_bonus = 0.03 * near_speedup_ratio * max(0.0, cur_min_dist_norm - 0.25)
+        late_survival_bonus = 0.05 * max(0.0, near_speedup_ratio - 0.6) * max(0.0, cur_min_dist_norm - 0.2)
 
         # Corridor openness reward / corridor开阔奖励
-        corridor_reward = 0.03 * self._compute_openness(obstacle_channel)
+        corridor_reward = 0.05 * self._compute_openness(obstacle_channel)
 
         # Sparse rewards / 稀疏奖励
-        treasure_score_reward = 0.2 if treasure_score > self.last_treasure_score else 0.0
-        buff_reward = 0.15 if buff_count > self.last_buff_count else 0.0
+        treasure_score_reward = 0.35 if treasure_score > self.last_treasure_score else 0.0
+        buff_reward = 0.2 if buff_count > self.last_buff_count else 0.0
 
         # Risk penalties / 风险惩罚
-        danger_penalty = -0.18 * max(0.0, 0.25 - cur_min_dist_norm)
-        second_monster_penalty = -0.08 * max(0.0, 0.28 - cur_second_dist_norm)
-        corner_penalty = -0.08 * max(0.0, 0.2 - self._compute_openness(obstacle_channel))
-        encircle_penalty = -0.06 * self._compute_encircle_penalty(hero_pos, monsters)
+        danger_penalty = -0.08 * max(0.0, 0.25 - cur_min_dist_norm)
+        second_monster_penalty = -0.04 * max(0.0, 0.28 - cur_second_dist_norm)
+        corner_penalty = -0.04 * max(0.0, 0.2 - self._compute_openness(obstacle_channel))
+        encircle_penalty = -0.03 * self._compute_encircle_penalty(hero_pos, monsters)
 
         # Movement penalties / 移动相关惩罚
         invalid_move_penalty = self._compute_invalid_move_penalty(hero_pos)
@@ -277,7 +275,27 @@ class Preprocessor:
             + flash_abuse_penalty
             + second_monster_penalty
         )
-        reward_value = float(np.clip(reward_value, -1.0, 1.0))
+        reward_value = float(np.clip(reward_value, -1.5, 1.5))
+        self.last_reward_components = {
+            "survive_reward": float(survive_reward),
+            "step_score_reward": float(step_score_reward),
+            "treasure_score_reward": float(treasure_score_reward),
+            "buff_reward": float(buff_reward),
+            "treasure_approach_reward": float(treasure_approach_reward),
+            "dist_shaping": float(dist_shaping),
+            "near_speedup_bonus": float(near_speedup_bonus),
+            "late_survival_bonus": float(late_survival_bonus),
+            "corridor_reward": float(corridor_reward),
+            "encircle_penalty": float(encircle_penalty),
+            "corner_penalty": float(corner_penalty),
+            "danger_penalty": float(danger_penalty),
+            "invalid_move_penalty": float(invalid_move_penalty),
+            "repeat_explore_penalty": float(repeat_explore_penalty),
+            "flash_escape_reward": float(flash_escape_reward),
+            "flash_abuse_penalty": float(flash_abuse_penalty),
+            "second_monster_penalty": float(second_monster_penalty),
+            "reward_total": float(reward_value),
+        }
 
         self.last_min_monster_dist_norm = cur_min_dist_norm
         self.last_min_treasure_dist_norm = cur_min_treasure_dist_norm
@@ -299,7 +317,6 @@ class Preprocessor:
         row = int(np.round((dz / MAP_SIZE) * (LOCAL_MAP_WINDOW - 1))) + radius
         if 0 <= row < LOCAL_MAP_WINDOW and 0 <= col < LOCAL_MAP_WINDOW:
             channel[row, col] = 1.0
-<<<<<<< codex/analyze-sac-design-for-training-framework-08dzjs
 
     def _compute_openness(self, obstacle_channel):
         passable = 1.0 - obstacle_channel
@@ -334,7 +351,7 @@ class Preprocessor:
         dx = hx - self.last_hero_pos[0]
         dz = hz - self.last_hero_pos[1]
         disp = np.sqrt(dx * dx + dz * dz)
-        return -0.08 if disp < 0.2 else 0.0
+        return -0.03 if disp < 0.2 else 0.0
 
     def _compute_repeat_penalty(self, hero_pos):
         hx, hz = float(hero_pos.get("x", 0.0)), float(hero_pos.get("z", 0.0))
@@ -343,7 +360,7 @@ class Preprocessor:
         self.recent_positions.append(cell)
         unique_ratio = len(set(self.recent_positions)) / max(1, len(self.recent_positions))
         revisit = self.visit_counter[cell]
-        return -0.04 * max(0.0, revisit / 20.0) - 0.05 * max(0.0, 0.5 - unique_ratio)
+        return -0.02 * max(0.0, revisit / 20.0) - 0.02 * max(0.0, 0.5 - unique_ratio)
 
     def _compute_flash_reward(self, flash_cd, cur_min_dist_norm, obstacle_channel):
         flash_cd = float(flash_cd)
@@ -353,8 +370,8 @@ class Preprocessor:
         openness = self._compute_openness(obstacle_channel)
         escaped = cur_min_dist_norm - self.last_min_monster_dist_norm
         if escaped > 0.05 or openness > 0.6:
-            return 0.2, 0.0
-        return 0.0, -0.15
+            return 0.25, 0.0
+        return 0.0, -0.08
 
     def _extract_monster_relative(self, monster, hero_pos):
         rel = monster.get("relative_pos", {}) if isinstance(monster, dict) else {}
@@ -377,5 +394,6 @@ class Preprocessor:
         dz_norm = float(np.clip(float(dz) / MAP_SIZE, -1.0, 1.0))
         dist_norm = _norm(float(dist), MAP_SIZE * 1.41)
         return [dx_norm, dz_norm, dist_norm]
-=======
->>>>>>> simple_sac
+
+    def get_last_reward_components(self):
+        return dict(self.last_reward_components)
