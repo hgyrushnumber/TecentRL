@@ -16,7 +16,7 @@ import time
 
 import torch
 import torch.nn.functional as F
-from agent_ppo.conf.conf import Config
+from agent_diy.conf.conf import Config
 
 
 class Algorithm:
