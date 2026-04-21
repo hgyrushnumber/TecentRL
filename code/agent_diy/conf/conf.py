@@ -12,12 +12,18 @@ Configuration for Gorge Chase SAC-compatible training.
 
 
 class Config:
-    # Feature dimensions / 特征维度（共40维）
+    # Spatial encoder settings / 空间编码设置
+    LOCAL_MAP_WINDOW = 21
+    MAP_CHANNELS = 4  # hero, monster, treasure, obstacle
+    MAP_FEATURE_DIM = LOCAL_MAP_WINDOW * LOCAL_MAP_WINDOW * MAP_CHANNELS
+
+    # Feature dimensions / 特征维度（共1794维）
     FEATURES = [
         4,
         5,
         5,
-        16,
+        6,  # out-of-vision monster relative info (2 monsters x [dx, dz, dist])
+        MAP_FEATURE_DIM,
         8,
         2,
     ]

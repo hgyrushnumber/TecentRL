@@ -14,7 +14,7 @@ import os
 import time
 
 import numpy as np
-from agent_ppo.feature.definition import SampleData, sample_process
+from agent_diy.feature.definition import SampleData, sample_process
 from tools.metrics_utils import get_training_metrics
 from tools.train_env_conf_validate import read_usr_conf
 from common_python.utils.workflow_disaster_recovery import handle_disaster_recovery
@@ -25,9 +25,9 @@ def workflow(envs, agents, logger=None, monitor=None, *args, **kwargs):
     env = envs[0]
     agent = agents[0]
 
-    usr_conf = read_usr_conf("agent_ppo/conf/train_env_conf.toml", logger)
+    usr_conf = read_usr_conf("agent_diy/conf/train_env_conf.toml", logger)
     if usr_conf is None:
-        logger.error("usr_conf is None, please check agent_ppo/conf/train_env_conf.toml")
+        logger.error("usr_conf is None, please check agent_diy/conf/train_env_conf.toml")
         return
 
     episode_runner = EpisodeRunner(
@@ -157,11 +157,14 @@ class EpisodeRunner:
                     total_score = env_info.get("total_score", 0)
 
                     if terminated:
-                        final_reward[0] = -10.0
-                        result_str = "FAIL"
-                    else:
+                        final_reward[0] = -12.0
+                        result_str = "DEAD"
+                    elif truncated:
                         final_reward[0] = 10.0
-                        result_str = "WIN"
+                        result_str = "TIMEOUT_DONE"
+                    else:
+                        final_reward[0] = -2.0
+                        result_str = "ABNORMAL"
 
                     self.logger.info(
                         f"[GAMEOVER] episode:{self.episode_cnt} steps:{step} "
