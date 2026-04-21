@@ -11,6 +11,7 @@ Feature preprocessor and reward design for Gorge Chase PPO.
 """
 
 import numpy as np
+from agent_diy.conf.conf import Config
 
 # Map size / 地图尺寸（128×128）
 MAP_SIZE = 128.0
@@ -22,6 +23,9 @@ MAX_DIST_BUCKET = 5.0
 MAX_FLASH_CD = 2000.0
 # Max buff duration / buff最大持续时间
 MAX_BUFF_DURATION = 50.0
+# Local map window size / 局部地图窗口边长
+LOCAL_MAP_WINDOW = Config.LOCAL_MAP_WINDOW
+MAP_CHANNELS = Config.MAP_CHANNELS
 
 
 def _norm(v, v_max, v_min=0.0):
@@ -93,16 +97,51 @@ class Preprocessor:
             else:
                 monster_feats.append(np.zeros(5, dtype=np.float32))
 
-        # Local map features (16D) / 局部地图特征
-        map_feat = np.zeros(16, dtype=np.float32)
-        if map_info is not None and len(map_info) >= 13:
-            center = len(map_info) // 2
-            flat_idx = 0
-            for row in range(center - 2, center + 2):
-                for col in range(center - 2, center + 2):
+        # Spatial map features (C x 21 x 21) / 空间特征图（多通道）
+        # channel 0: hero, 1: monster, 2: treasure, 3: obstacle
+        map_tensor = np.zeros((MAP_CHANNELS, LOCAL_MAP_WINDOW, LOCAL_MAP_WINDOW), dtype=np.float32)
+        center = LOCAL_MAP_WINDOW // 2
+        map_tensor[0, center, center] = 1.0
+
+        # Place monsters on monster channel / 将怪物投影到怪物通道
+        for m in monsters:
+            if float(m.get("is_in_view", 0)) <= 0:
+                continue
+            m_pos = m.get("pos", {})
+            self._place_entity(
+                map_tensor[1],
+                hero_pos.get("x", 0.0),
+                hero_pos.get("z", 0.0),
+                m_pos.get("x", 0.0),
+                m_pos.get("z", 0.0),
+            )
+
+        # Place treasures on treasure channel / 将宝箱投影到宝箱通道
+        treasure_list = frame_state.get("treasures", frame_state.get("treasure", []))
+        if isinstance(treasure_list, dict):
+            treasure_list = [treasure_list]
+        for t in treasure_list:
+            t_pos = t.get("pos", {}) if isinstance(t, dict) else {}
+            self._place_entity(
+                map_tensor[2],
+                hero_pos.get("x", 0.0),
+                hero_pos.get("z", 0.0),
+                t_pos.get("x", 0.0),
+                t_pos.get("z", 0.0),
+            )
+
+        # Build obstacle channel from local map occupancy / 障碍物通道
+        obstacle_channel = np.zeros((LOCAL_MAP_WINDOW, LOCAL_MAP_WINDOW), dtype=np.float32)
+        if map_info is not None and len(map_info) >= LOCAL_MAP_WINDOW:
+            radius = LOCAL_MAP_WINDOW // 2
+            for row in range(center - radius, center + radius + 1):
+                for col in range(center - radius, center + radius + 1):
+                    rr = row - (center - radius)
+                    cc = col - (center - radius)
                     if 0 <= row < len(map_info) and 0 <= col < len(map_info[0]):
-                        map_feat[flat_idx] = float(map_info[row][col] != 0)
-                    flat_idx += 1
+                        obstacle_channel[rr, cc] = float(map_info[row][col] != 0)
+        map_tensor[3] = obstacle_channel
+        map_feat = map_tensor.reshape(-1)
 
         # Legal action mask (8D) / 合法动作掩码
         legal_action = [1] * 8
@@ -148,3 +187,12 @@ class Preprocessor:
         reward = [survive_reward + dist_shaping]
 
         return feature, legal_action, reward
+
+    def _place_entity(self, channel, hero_x, hero_z, obj_x, obj_z):
+        radius = LOCAL_MAP_WINDOW // 2
+        dx = float(obj_x) - float(hero_x)
+        dz = float(obj_z) - float(hero_z)
+        col = int(np.round((dx / MAP_SIZE) * (LOCAL_MAP_WINDOW - 1))) + radius
+        row = int(np.round((dz / MAP_SIZE) * (LOCAL_MAP_WINDOW - 1))) + radius
+        if 0 <= row < LOCAL_MAP_WINDOW and 0 <= col < LOCAL_MAP_WINDOW:
+            channel[row, col] = 1.0
