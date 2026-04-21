@@ -131,6 +131,7 @@ class Preprocessor:
             )
 
         # Build obstacle channel from local map occupancy / 障碍物通道
+        # map_info 定义：1=可通行，0=障碍物
         obstacle_channel = np.zeros((LOCAL_MAP_WINDOW, LOCAL_MAP_WINDOW), dtype=np.float32)
         if map_info is not None and len(map_info) >= LOCAL_MAP_WINDOW:
             radius = LOCAL_MAP_WINDOW // 2
@@ -139,7 +140,7 @@ class Preprocessor:
                     rr = row - (center - radius)
                     cc = col - (center - radius)
                     if 0 <= row < len(map_info) and 0 <= col < len(map_info[0]):
-                        obstacle_channel[rr, cc] = float(map_info[row][col] != 0)
+                        obstacle_channel[rr, cc] = float(map_info[row][col] == 0)
         map_tensor[3] = obstacle_channel
         map_feat = map_tensor.reshape(-1)
 
