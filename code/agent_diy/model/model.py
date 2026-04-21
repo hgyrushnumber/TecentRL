@@ -13,7 +13,7 @@ Neural network model for Gorge Chase SAC.
 import torch
 import torch.nn as nn
 
-from agent_ppo.conf.conf import Config
+from agent_diy.conf.conf import Config
 
 
 def make_fc_layer(in_features, out_features):
@@ -32,18 +32,37 @@ class Model(nn.Module):
         self.model_name = "gorge_chase_sac"
         self.device = device
 
-        input_dim = Config.DIM_OF_OBSERVATION
         hidden_dim = Config.HIDDEN_DIM
         mid_dim = Config.MID_DIM
         action_num = Config.ACTION_NUM
+        map_window = Config.LOCAL_MAP_WINDOW
+        map_channels = Config.MAP_CHANNELS
+        scalar_dim = Config.FEATURES[0] + Config.FEATURES[1] + Config.FEATURES[2] + Config.FEATURES[4] + Config.FEATURES[5]
+        map_flat_dim = Config.FEATURES[3]
 
-        # Shared backbone / 共享骨干
-        self.backbone = nn.Sequential(
-            make_fc_layer(input_dim, hidden_dim),
+        self.map_window = map_window
+        self.map_channels = map_channels
+        self.map_flat_dim = map_flat_dim
+        self.scalar_dim = scalar_dim
+
+        # Spatial encoder (CNN) / 空间特征卷积编码器
+        self.map_encoder = nn.Sequential(
+            nn.Conv2d(map_channels, 16, kernel_size=3, padding=1),
             nn.ReLU(),
-            make_fc_layer(hidden_dim, mid_dim),
+            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
             nn.ReLU(),
+            nn.Conv2d(32, 32, kernel_size=3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Flatten(),
         )
+        conv_out = 32 * ((map_window + 3) // 4) * ((map_window + 3) // 4)
+        self.map_proj = nn.Sequential(make_fc_layer(conv_out, hidden_dim), nn.ReLU())
+
+        # Scalar encoder / 标量特征编码器
+        self.scalar_encoder = nn.Sequential(make_fc_layer(scalar_dim, hidden_dim), nn.ReLU())
+
+        # Shared backbone / 融合骨干
+        self.backbone = nn.Sequential(make_fc_layer(hidden_dim * 2, hidden_dim), nn.ReLU(), make_fc_layer(hidden_dim, mid_dim), nn.ReLU())
 
         # Actor head / 策略头
         self.actor_head = make_fc_layer(mid_dim, action_num)
@@ -53,7 +72,26 @@ class Model(nn.Module):
         self.q2_head = make_fc_layer(mid_dim, action_num)
 
     def forward(self, obs, inference=False):
-        hidden = self.backbone(obs)
+        hero_end = Config.FEATURES[0]
+        m1_end = hero_end + Config.FEATURES[1]
+        m2_end = m1_end + Config.FEATURES[2]
+        map_end = m2_end + Config.FEATURES[3]
+        legal_end = map_end + Config.FEATURES[4]
+
+        hero_feat = obs[:, :hero_end]
+        m1_feat = obs[:, hero_end:m1_end]
+        m2_feat = obs[:, m1_end:m2_end]
+        map_flat = obs[:, m2_end:map_end]
+        legal_feat = obs[:, map_end:legal_end]
+        progress_feat = obs[:, legal_end:]
+
+        scalar_feat = torch.cat([hero_feat, m1_feat, m2_feat, legal_feat, progress_feat], dim=1)
+        map_tensor = map_flat.view(-1, self.map_channels, self.map_window, self.map_window)
+
+        map_embed = self.map_proj(self.map_encoder(map_tensor))
+        scalar_embed = self.scalar_encoder(scalar_feat)
+        hidden = self.backbone(torch.cat([map_embed, scalar_embed], dim=1))
+
         logits = self.actor_head(hidden)
         q1 = self.q1_head(hidden)
         q2 = self.q2_head(hidden)
