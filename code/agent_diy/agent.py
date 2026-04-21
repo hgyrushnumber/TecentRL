@@ -63,9 +63,15 @@ class Agent(BaseAgent):
         legal_action = list_obs_data[0].legal_action
 
         probs, q1, q2 = self._run_model(feature, legal_action)
+        legal_mask = np.array(legal_action, dtype=np.float32)
+        min_q = np.minimum(q1, q2)
+        q_probs = self._legal_soft_max(min_q, legal_mask)
+        mixed_probs = 0.5 * probs + 0.5 * q_probs
+        mixed_probs = mixed_probs / (np.sum(mixed_probs) + 1e-8)
+        masked_q = np.where(legal_mask > 0, min_q, -1e9)
 
-        action = int(np.random.choice(len(probs), p=probs))
-        d_action = int(np.argmax(probs))
+        action = int(np.random.choice(len(mixed_probs), p=mixed_probs))
+        d_action = int(np.argmax(masked_q))
 
         return [
             ActData(
