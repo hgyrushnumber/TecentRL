@@ -13,7 +13,7 @@ Neural network model for Gorge Chase SAC.
 import torch
 import torch.nn as nn
 
-from agent_ppo.conf.conf import Config
+from agent_diy.conf.conf import Config
 
 
 def make_fc_layer(in_features, out_features):
