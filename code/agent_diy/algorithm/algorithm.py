@@ -96,6 +96,9 @@ class Algorithm:
 
         now = time.time()
         if now - self.last_report_monitor_time >= 60:
+            legal_action_count = legal_action.sum(dim=1).float().mean()
+            entropy_max_theory = torch.log(legal_action.sum(dim=1).float().clamp_min(1.0)).mean()
+            entropy_ratio = info["entropy"] / entropy_max_theory.clamp_min(1e-6)
             results = {
                 "total_loss": round(total_loss.item(), 4),
                 "value_loss": round(info["critic_loss"].item(), 4),
@@ -104,12 +107,14 @@ class Algorithm:
                 "entropy": round(info["entropy"].item(), 4),
                 "entropy_loss": round(info["entropy"].item(), 4),  # backward-compatible metric key
                 "entropy_gap": round(abs(info["entropy"].item() - self.target_entropy), 4),
+                "entropy_max_theory": round(entropy_max_theory.item(), 4),
+                "entropy_ratio": round(entropy_ratio.item(), 4),
                 "reward": round(reward.mean().item(), 4),
                 "q_target_mean": round(info["q_target_mean"].item(), 4),
                 "q1_mean": round(info["q1_mean"].item(), 4),
                 "q2_mean": round(info["q2_mean"].item(), 4),
                 "q_gap": round(info["q_gap"].item(), 4),
-                "legal_action_count": round(legal_action.sum(dim=1).float().mean().item(), 4),
+                "legal_action_count": round(legal_action_count.item(), 4),
                 "done_rate": round(done.float().mean().item(), 4),
                 "grad_norm": round(float(grad_norm.item() if hasattr(grad_norm, "item") else grad_norm), 4),
                 "alpha": round(self.alpha, 4),
