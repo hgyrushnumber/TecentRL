@@ -69,7 +69,8 @@ class Agent(BaseAgent):
         legal_mask = np.array(legal_action, dtype=np.float32)
         min_q = np.minimum(q1, q2)
         q_probs = self._legal_soft_max(min_q, legal_mask)
-        mixed_probs = 0.5 * probs + 0.5 * q_probs
+        mix_coef = float(getattr(Config, "Q_MIX_COEF", 0.1))
+        mixed_probs = (1.0 - mix_coef) * probs + mix_coef * q_probs
         mixed_probs = mixed_probs / (np.sum(mixed_probs) + 1e-8)
         masked_q = np.where(legal_mask > 0, min_q, -1e9)
 

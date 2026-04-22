@@ -81,7 +81,7 @@ class Algorithm:
         self.optimizer.step()
         if self.auto_alpha:
             self.alpha_optimizer.zero_grad()
-            alpha_loss = (self.log_alpha.exp() * (self.target_entropy - info["entropy"]).detach()).mean()
+            alpha_loss = (self.log_alpha.exp() * (info["entropy"] - self.target_entropy).detach()).mean()
             alpha_loss.backward()
             self.alpha_optimizer.step()
             self.alpha = float(self.log_alpha.exp().item())

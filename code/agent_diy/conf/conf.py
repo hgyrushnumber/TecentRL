@@ -48,6 +48,7 @@ class Config:
     AUTO_ALPHA = True
     TARGET_ENTROPY = 2.0
     ALPHA_LR = 1e-4
+    Q_MIX_COEF = 0.1
 
     # Optimizer
     INIT_LEARNING_RATE_START = 2e-4
