@@ -140,7 +140,6 @@ class EpisodeRunner:
                 for k, v in reward_components.items():
                     reward_component_sums[k] = reward_component_sums.get(k, 0.0) + float(v)
 
-                final_reward = np.zeros(1, dtype=np.float32)
                 if done:
                     env_info = env_obs.get("observation", {}).get("env_info", {})
                     total_score = env_info.get("total_score", 0)
@@ -173,10 +172,9 @@ class EpisodeRunner:
                     now = time.time()
                     if now - self.last_report_monitor_time >= 60 and self.monitor:
                         monitor_data = {
-                            "reward": round(total_reward + float(final_reward[0]), 4),
+                            "reward": round(total_reward, 4),
                             "episode_steps": step,
                             "episode_cnt": self.episode_cnt,
-                            "final_reward": round(float(final_reward[0]), 4),
                             "comp_survive": round(reward_component_sums.get("survive_reward", 0.0), 4),
                             "comp_treasure_score": round(reward_component_sums.get("treasure_score_reward", 0.0), 4),
                             "comp_treasure_approach": round(

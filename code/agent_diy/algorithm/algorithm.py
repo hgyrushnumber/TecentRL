@@ -37,6 +37,9 @@ class Algorithm:
         self.target_entropy = getattr(Config, "TARGET_ENTROPY", 2.0)
         self.alpha_min = float(getattr(Config, "ALPHA_MIN", 1e-3))
         self.alpha_max = float(getattr(Config, "ALPHA_MAX", 10.0))
+        self.target_q_clip = float(getattr(Config, "TARGET_Q_CLIP", 8.0))
+        self.actor_update_interval = int(max(1, getattr(Config, "ACTOR_UPDATE_INTERVAL", 2)))
+        self.critic_use_huber = bool(getattr(Config, "CRITIC_USE_HUBER", True))
         self.alpha_loss_value = 0.0
         if self.auto_alpha:
             init_alpha = max(float(Config.ALPHA), 1e-6)
@@ -46,6 +49,15 @@ class Algorithm:
 
         self.last_report_monitor_time = 0
         self.train_step = 0
+        self.last_actor_loss = 0.0
+        self.last_critic_loss = 0.0
+        self.last_q_target_mean = 0.0
+        self.last_q1_mean = 0.0
+        self.last_q2_mean = 0.0
+        self.last_q_gap = 0.0
+        self.last_entropy = 0.0
+        self.last_critic_grad_norm = 0.0
+        self.last_actor_grad_norm = 0.0
 
         self.target_model = copy.deepcopy(self.model).to(self.device)
         self.target_model.load_state_dict(self.model.state_dict())
@@ -67,8 +79,7 @@ class Algorithm:
 
         self.model.set_train_mode()
         self.optimizer.zero_grad()
-
-        total_loss, info = self._compute_loss(
+        critic_loss, critic_info = self._compute_critic_loss(
             obs=obs,
             legal_action=legal_action,
             act=act,
@@ -77,14 +88,32 @@ class Algorithm:
             next_obs=next_obs,
             next_legal_action=next_legal_action,
         )
-
-        total_loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(self.parameters, Config.GRAD_CLIP_RANGE)
+        critic_loss.backward()
+        critic_grad_norm = torch.nn.utils.clip_grad_norm_(self.parameters, Config.GRAD_CLIP_RANGE)
         self.optimizer.step()
+
+        actor_grad_norm = torch.tensor(0.0, device=self.device)
+        actor_loss, actor_entropy = self._compute_actor_loss(obs=obs, legal_action=legal_action)
+        if self.train_step % self.actor_update_interval == 0:
+            self.optimizer.zero_grad()
+            actor_loss.backward()
+            actor_grad_norm = torch.nn.utils.clip_grad_norm_(self.parameters, Config.GRAD_CLIP_RANGE)
+            self.optimizer.step()
+
+        self.last_critic_loss = float(critic_loss.item())
+        self.last_actor_loss = float(actor_loss.item())
+        self.last_q_target_mean = float(critic_info["q_target_mean"].item())
+        self.last_q1_mean = float(critic_info["q1_mean"].item())
+        self.last_q2_mean = float(critic_info["q2_mean"].item())
+        self.last_q_gap = float(critic_info["q_gap"].item())
+        self.last_entropy = float(actor_entropy.item())
+        self.last_critic_grad_norm = float(critic_grad_norm.item() if hasattr(critic_grad_norm, "item") else critic_grad_norm)
+        self.last_actor_grad_norm = float(actor_grad_norm.item() if hasattr(actor_grad_norm, "item") else actor_grad_norm)
+
         if self.auto_alpha:
             self.alpha_optimizer.zero_grad()
             # Optimize log(alpha) directly for better numerical stability.
-            alpha_loss = (self.log_alpha * (info["entropy"] - self.target_entropy).detach()).mean()
+            alpha_loss = (self.log_alpha * (actor_entropy - self.target_entropy).detach()).mean()
             alpha_loss.backward()
             self.alpha_optimizer.step()
             with torch.no_grad():
@@ -96,24 +125,28 @@ class Algorithm:
 
         now = time.time()
         if now - self.last_report_monitor_time >= 60:
+            total_loss = self.last_critic_loss + self.last_actor_loss
             results = {
-                "total_loss": round(total_loss.item(), 4),
-                "value_loss": round(info["critic_loss"].item(), 4),
-                "policy_loss": round(info["actor_loss"].item(), 4),
+                "total_loss": round(total_loss, 4),
+                "value_loss": round(self.last_critic_loss, 4),
+                "policy_loss": round(self.last_actor_loss, 4),
                 # NOTE: this is policy entropy value (not a standalone optimized "entropy loss")
-                "entropy": round(info["entropy"].item(), 4),
-                "entropy_loss": round(info["entropy"].item(), 4),  # backward-compatible metric key
-                "entropy_gap": round(abs(info["entropy"].item() - self.target_entropy), 4),
+                "entropy": round(self.last_entropy, 4),
+                "entropy_loss": round(self.last_entropy, 4),  # backward-compatible metric key
+                "entropy_gap": round(abs(self.last_entropy - self.target_entropy), 4),
                 "reward": round(reward.mean().item(), 4),
-                "q_target_mean": round(info["q_target_mean"].item(), 4),
-                "q1_mean": round(info["q1_mean"].item(), 4),
-                "q2_mean": round(info["q2_mean"].item(), 4),
-                "q_gap": round(info["q_gap"].item(), 4),
+                "q_target_mean": round(self.last_q_target_mean, 4),
+                "q1_mean": round(self.last_q1_mean, 4),
+                "q2_mean": round(self.last_q2_mean, 4),
+                "q_gap": round(self.last_q_gap, 4),
                 "legal_action_count": round(legal_action.sum(dim=1).float().mean().item(), 4),
                 "done_rate": round(done.float().mean().item(), 4),
-                "grad_norm": round(float(grad_norm.item() if hasattr(grad_norm, "item") else grad_norm), 4),
+                "grad_norm": round(max(self.last_critic_grad_norm, self.last_actor_grad_norm), 4),
+                "critic_grad_norm": round(self.last_critic_grad_norm, 4),
+                "actor_grad_norm": round(self.last_actor_grad_norm, 4),
                 "alpha": round(self.alpha, 4),
                 "alpha_loss": round(self.alpha_loss_value, 4),
+                "actor_update_interval": self.actor_update_interval,
             }
             if self.logger:
                 self.logger.info(
@@ -128,7 +161,7 @@ class Algorithm:
                 self.monitor.put_data({os.getpid(): results})
             self.last_report_monitor_time = now
 
-    def _compute_loss(self, obs, legal_action, act, reward, done, next_obs, next_legal_action):
+    def _compute_critic_loss(self, obs, legal_action, act, reward, done, next_obs, next_legal_action):
         logits, q1, q2 = self.model(obs)
         q1_a = q1.gather(1, act)
         q2_a = q2.gather(1, act)
@@ -140,9 +173,21 @@ class Algorithm:
             next_min_q = torch.min(next_q1, next_q2)
             next_v = (next_prob * (next_min_q - self.alpha * next_log_prob)).sum(dim=1, keepdim=True)
             q_target = reward + (1.0 - done) * self.gamma * next_v
+            q_target = q_target.clamp(-self.target_q_clip, self.target_q_clip)
 
-        critic_loss = F.mse_loss(q1_a, q_target) + F.mse_loss(q2_a, q_target)
+        if self.critic_use_huber:
+            critic_loss = F.smooth_l1_loss(q1_a, q_target) + F.smooth_l1_loss(q2_a, q_target)
+        else:
+            critic_loss = F.mse_loss(q1_a, q_target) + F.mse_loss(q2_a, q_target)
 
+        return critic_loss, {
+            "q_target_mean": q_target.mean(),
+            "q1_mean": q1_a.mean(),
+            "q2_mean": q2_a.mean(),
+            "q_gap": torch.abs(q1_a - q2_a).mean(),
+        }
+
+    def _compute_actor_loss(self, obs, legal_action):
         logits_pi, q1_pi, q2_pi = self.model(obs)
         prob = self._masked_softmax(logits_pi, legal_action)
         log_prob = torch.log(prob.clamp_min(1e-8))
@@ -150,18 +195,7 @@ class Algorithm:
 
         actor_loss = (prob * (self.alpha * log_prob - min_q)).sum(dim=1).mean()
         entropy = -(prob * log_prob).sum(dim=1).mean()
-
-        total_loss = critic_loss + actor_loss
-
-        return total_loss, {
-            "critic_loss": critic_loss,
-            "actor_loss": actor_loss,
-            "entropy": entropy,
-            "q_target_mean": q_target.mean(),
-            "q1_mean": q1_a.mean(),
-            "q2_mean": q2_a.mean(),
-            "q_gap": torch.abs(q1_a - q2_a).mean(),
-        }
+        return actor_loss, entropy
 
     def _masked_softmax(self, logits, legal_action):
         legal_action = legal_action.float()

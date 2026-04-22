@@ -57,6 +57,8 @@ class Preprocessor:
         self.recent_positions = deque(maxlen=20)
         self.last_reward_components = {}
         self.last_survival_stage = 0
+        # Post-flash behavior window / 闪现后行为约束窗口
+        self.post_flash_window = 0
 
     def feature_process(self, env_obs, last_action):
         """Process env_obs into feature vector, legal_action mask, and reward.
@@ -242,37 +244,64 @@ class Preprocessor:
         buff_count = float(env_info.get("buff_count", env_info.get("buff_num", self.last_buff_count)))
 
         # Dense rewards / 稠密奖励
-        survive_reward = 0.01
-        step_score_reward = 0.05 if step_score > self.last_step_score else 0.0
-        dist_shaping = 0.08 * (cur_min_dist_norm - self.last_min_monster_dist_norm)
-        treasure_approach_reward = 0.08 * (self.last_min_treasure_dist_norm - cur_min_treasure_dist_norm)
+        survive_reward = float(getattr(Config, "REWARD_SURVIVE", 0.01))
+        step_score_reward = float(getattr(Config, "REWARD_STEP_SCORE", 0.05)) if step_score > self.last_step_score else 0.0
+        dist_shaping = float(getattr(Config, "REWARD_DIST_SHAPING", 0.08)) * (
+            cur_min_dist_norm - self.last_min_monster_dist_norm
+        )
+        treasure_approach_reward = 0.0
+        if bool(getattr(Config, "ENABLE_TREASURE_REWARD", False)):
+            treasure_progress = self.last_min_treasure_dist_norm - cur_min_treasure_dist_norm
+            treasure_approach_reward = float(getattr(Config, "REWARD_TREASURE_APPROACH", 0.12)) * max(0.0, treasure_progress)
+            treasure_approach_reward -= float(getattr(Config, "PENALTY_TREASURE_AWAY", 0.03)) * max(0.0, -treasure_progress)
+            if cur_min_dist_norm > float(getattr(Config, "TREASURE_SAFE_DISTANCE_TH", 0.35)) and treasure_progress > 0.0:
+                treasure_approach_reward += min(
+                    float(getattr(Config, "REWARD_TREASURE_SAFE_BONUS_CAP", 0.04)),
+                    float(getattr(Config, "REWARD_TREASURE_SAFE_BONUS_COEF", 0.16)) * treasure_progress,
+                )
 
         # Progressive survival reward / 生存递进奖励（步数越高奖励越大）
-        progressive_step_reward = 0.02 * step_norm
+        progressive_step_reward = float(getattr(Config, "REWARD_PROGRESSIVE_STEP", 0.02)) * step_norm
 
         # Progressive survival milestone reward / 生存里程碑递进奖励（50步更新一次）
         current_stage = int(min(10, self.step_no // 50))
-        stage_progress_reward = 0.04 * max(0, current_stage - self.last_survival_stage)
+        stage_progress_reward = float(getattr(Config, "REWARD_STAGE_PROGRESS", 0.04)) * max(
+            0, current_stage - self.last_survival_stage
+        )
         self.last_survival_stage = current_stage
 
         # Speed-up stage shaping / 怪物加速前后强化
         monster_speedup_step = float(env_info.get("monster_speedup", 500))
         near_speedup_ratio = _norm(self.step_no, max(monster_speedup_step, 1.0))
-        near_speedup_bonus = 0.03 * near_speedup_ratio * max(0.0, cur_min_dist_norm - 0.25)
-        late_survival_bonus = 0.05 * max(0.0, near_speedup_ratio - 0.6) * max(0.0, cur_min_dist_norm - 0.2)
+        near_speedup_bonus = float(getattr(Config, "REWARD_NEAR_SPEEDUP", 0.03)) * near_speedup_ratio * max(
+            0.0, cur_min_dist_norm - 0.25
+        )
+        late_survival_bonus = float(getattr(Config, "REWARD_LATE_SURVIVAL", 0.05)) * max(
+            0.0, near_speedup_ratio - 0.6
+        ) * max(0.0, cur_min_dist_norm - 0.2)
 
         # Corridor openness reward / corridor开阔奖励
-        corridor_reward = 0.05 * self._compute_openness(obstacle_channel)
+        corridor_reward = float(getattr(Config, "REWARD_CORRIDOR", 0.05)) * self._compute_openness(obstacle_channel)
 
         # Sparse rewards / 稀疏奖励
-        treasure_score_reward = 0.6 if treasure_score > self.last_treasure_score else 0.0
-        buff_reward = 0.2 if buff_count > self.last_buff_count else 0.0
+        treasure_score_reward = (
+            float(getattr(Config, "REWARD_TREASURE_SCORE", 0.6))
+            if bool(getattr(Config, "ENABLE_TREASURE_REWARD", False)) and treasure_score > self.last_treasure_score
+            else 0.0
+        )
+        buff_reward = float(getattr(Config, "REWARD_BUFF", 0.2)) if buff_count > self.last_buff_count else 0.0
 
         # Risk penalties / 风险惩罚
-        danger_penalty = -0.08 * max(0.0, 0.25 - cur_min_dist_norm)
-        second_monster_penalty = -0.04 * max(0.0, 0.28 - cur_second_dist_norm)
-        corner_penalty = -0.04 * max(0.0, 0.2 - self._compute_openness(obstacle_channel))
-        encircle_penalty = -0.03 * self._compute_encircle_penalty(hero_pos, monsters)
+        danger_penalty = -float(getattr(Config, "PENALTY_DANGER", 0.08)) * max(0.0, 0.25 - cur_min_dist_norm)
+        second_monster_penalty = -float(getattr(Config, "PENALTY_SECOND_MONSTER", 0.04)) * max(
+            0.0, 0.28 - cur_second_dist_norm
+        )
+        corner_penalty = -float(getattr(Config, "PENALTY_CORNER", 0.04)) * max(
+            0.0, 0.2 - self._compute_openness(obstacle_channel)
+        )
+        encircle_penalty = -float(getattr(Config, "PENALTY_ENCIRCLE", 0.03)) * self._compute_encircle_penalty(
+            hero_pos, monsters
+        )
 
         # Movement penalties / 移动相关惩罚
         invalid_move_penalty = self._compute_invalid_move_penalty(hero_pos)
@@ -281,6 +310,11 @@ class Preprocessor:
         # Flash-related reward / 闪现相关奖励
         flash_escape_reward, flash_abuse_penalty = self._compute_flash_reward(
             hero.get("flash_cooldown", 0.0), cur_min_dist_norm, obstacle_channel
+        )
+        post_flash_move_bonus, post_flash_idle_penalty = self._compute_post_flash_momentum(
+            hero_pos=hero_pos,
+            cur_min_dist_norm=cur_min_dist_norm,
+            cur_min_treasure_dist_norm=cur_min_treasure_dist_norm,
         )
 
         reward_value = (
@@ -302,6 +336,8 @@ class Preprocessor:
             + repeat_explore_penalty
             + flash_escape_reward
             + flash_abuse_penalty
+            + post_flash_move_bonus
+            + post_flash_idle_penalty
             + second_monster_penalty
         )
         reward_value = float(np.clip(reward_value, -1.5, 1.5))
@@ -324,6 +360,8 @@ class Preprocessor:
             "repeat_explore_penalty": float(repeat_explore_penalty),
             "flash_escape_reward": float(flash_escape_reward),
             "flash_abuse_penalty": float(flash_abuse_penalty),
+            "post_flash_move_bonus": float(post_flash_move_bonus),
+            "post_flash_idle_penalty": float(post_flash_idle_penalty),
             "second_monster_penalty": float(second_monster_penalty),
             "reward_total": float(reward_value),
         }
@@ -382,7 +420,8 @@ class Preprocessor:
         dx = hx - self.last_hero_pos[0]
         dz = hz - self.last_hero_pos[1]
         disp = np.sqrt(dx * dx + dz * dz)
-        return -0.03 if disp < 0.2 else 0.0
+        invalid_move_penalty = float(getattr(Config, "PENALTY_INVALID_MOVE", 0.03))
+        return -invalid_move_penalty if disp < 0.2 else 0.0
 
     def _compute_repeat_penalty(self, hero_pos):
         hx, hz = float(hero_pos.get("x", 0.0)), float(hero_pos.get("z", 0.0))
@@ -391,18 +430,62 @@ class Preprocessor:
         self.recent_positions.append(cell)
         unique_ratio = len(set(self.recent_positions)) / max(1, len(self.recent_positions))
         revisit = self.visit_counter[cell]
-        return -0.02 * max(0.0, revisit / 20.0) - 0.02 * max(0.0, 0.5 - unique_ratio)
+        revisit_penalty = float(getattr(Config, "PENALTY_REPEAT_VISIT", 0.02))
+        unique_penalty = float(getattr(Config, "PENALTY_REPEAT_UNIQUE", 0.02))
+        return -revisit_penalty * max(0.0, revisit / 20.0) - unique_penalty * max(0.0, 0.5 - unique_ratio)
 
     def _compute_flash_reward(self, flash_cd, cur_min_dist_norm, obstacle_channel):
         flash_cd = float(flash_cd)
         flashed = flash_cd > self.last_flash_cd + 100.0
         if not flashed:
             return 0.0, 0.0
+        # Start a short post-flash behavior window to discourage "flash then idle".
+        self.post_flash_window = int(getattr(Config, "POST_FLASH_WINDOW", 8))
         openness = self._compute_openness(obstacle_channel)
         escaped = cur_min_dist_norm - self.last_min_monster_dist_norm
         if escaped > 0.05 or openness > 0.6:
-            return 0.25, 0.0
-        return 0.0, -0.08
+            return float(getattr(Config, "FLASH_ESCAPE_REWARD", 0.25)), 0.0
+        return 0.0, -float(getattr(Config, "FLASH_ABUSE_PENALTY", 0.08))
+
+    def _compute_post_flash_momentum(self, hero_pos, cur_min_dist_norm, cur_min_treasure_dist_norm):
+        if self.post_flash_window <= 0:
+            return 0.0, 0.0
+
+        self.post_flash_window -= 1
+
+        if self.last_hero_pos is None:
+            return 0.0, 0.0
+
+        hx, hz = float(hero_pos.get("x", 0.0)), float(hero_pos.get("z", 0.0))
+        dx = hx - self.last_hero_pos[0]
+        dz = hz - self.last_hero_pos[1]
+        disp = np.sqrt(dx * dx + dz * dz)
+
+        move_bonus = 0.0
+        idle_penalty = 0.0
+
+        # Encourage sustained movement for a few steps after flash.
+        if disp > float(getattr(Config, "THRESH_POST_FLASH_MOVE", 0.35)):
+            move_bonus += float(getattr(Config, "REWARD_POST_FLASH_MOVE", 0.02))
+        elif disp < float(getattr(Config, "THRESH_POST_FLASH_IDLE", 0.2)):
+            idle_penalty -= float(getattr(Config, "PENALTY_POST_FLASH_IDLE", 0.04))
+
+        # If monsters are relatively far, emphasize "don't stand still".
+        if (
+            cur_min_dist_norm > float(getattr(Config, "TREASURE_SAFE_DISTANCE_TH", 0.35))
+            and disp < float(getattr(Config, "THRESH_POST_FLASH_SAFE_IDLE", 0.25))
+        ):
+            idle_penalty -= float(getattr(Config, "PENALTY_POST_FLASH_SAFE_IDLE", 0.03))
+
+        # Small extra incentive to keep approaching treasure after a successful escape.
+        treasure_progress = self.last_min_treasure_dist_norm - cur_min_treasure_dist_norm
+        if treasure_progress > 0.0:
+            move_bonus += min(
+                float(getattr(Config, "REWARD_POST_FLASH_TREASURE_CAP", 0.03)),
+                float(getattr(Config, "REWARD_POST_FLASH_TREASURE_COEF", 0.12)) * treasure_progress,
+            )
+
+        return move_bonus, idle_penalty
 
     def _extract_monster_relative(self, monster, hero_pos):
         rel = monster.get("relative_pos", {}) if isinstance(monster, dict) else {}
