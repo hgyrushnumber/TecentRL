@@ -21,6 +21,7 @@ from common_python.utils.workflow_disaster_recovery import handle_disaster_recov
 
 
 def workflow(envs, agents, logger=None, monitor=None, *args, **kwargs):
+    last_save_model_time = time.time()
     env = envs[0]
     agent = agents[0]
 
@@ -44,6 +45,11 @@ def workflow(envs, agents, logger=None, monitor=None, *args, **kwargs):
 
             agent.send_sample_data(g_data)
             g_data.clear()
+
+            now = time.time()
+            if now - last_save_model_time >= 1800:
+                agent.save_model()
+                last_save_model_time = now
 
 
 class EpisodeRunner:
