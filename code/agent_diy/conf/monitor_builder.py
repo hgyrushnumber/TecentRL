@@ -78,7 +78,7 @@ def build_monitor():
         )
         .end_panel()
         .add_panel(
-            name="熵偏差(|H-H*|)",
+            name="熵偏差",
             name_en="entropy_gap",
             type="line",
         )
@@ -88,7 +88,7 @@ def build_monitor():
         )
         .end_panel()
         .add_panel(
-            name="熵上界(理论)",
+            name="熵上界",
             name_en="entropy_max_theory",
             type="line",
         )
@@ -98,7 +98,7 @@ def build_monitor():
         )
         .end_panel()
         .add_panel(
-            name="熵利用率(H/Hmax)",
+            name="熵利用率",
             name_en="entropy_ratio",
             type="line",
         )
