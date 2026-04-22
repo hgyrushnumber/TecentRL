@@ -11,7 +11,7 @@ Data definitions for Gorge Chase SAC.
 """
 
 from common_python.utils.common_func import create_cls
-from agent_ppo.conf.conf import Config
+from agent_diy.conf.conf import Config
 
 
 # ObsData: feature vector + legal action mask
