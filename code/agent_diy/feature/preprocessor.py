@@ -57,6 +57,8 @@ class Preprocessor:
         self.recent_positions = deque(maxlen=20)
         self.last_reward_components = {}
         self.last_survival_stage = 0
+        # Post-flash behavior window / 闪现后行为约束窗口
+        self.post_flash_window = 0
 
     def feature_process(self, env_obs, last_action):
         """Process env_obs into feature vector, legal_action mask, and reward.
@@ -282,6 +284,11 @@ class Preprocessor:
         flash_escape_reward, flash_abuse_penalty = self._compute_flash_reward(
             hero.get("flash_cooldown", 0.0), cur_min_dist_norm, obstacle_channel
         )
+        post_flash_move_bonus, post_flash_idle_penalty = self._compute_post_flash_momentum(
+            hero_pos=hero_pos,
+            cur_min_dist_norm=cur_min_dist_norm,
+            cur_min_treasure_dist_norm=cur_min_treasure_dist_norm,
+        )
 
         reward_value = (
             survive_reward
@@ -302,6 +309,8 @@ class Preprocessor:
             + repeat_explore_penalty
             + flash_escape_reward
             + flash_abuse_penalty
+            + post_flash_move_bonus
+            + post_flash_idle_penalty
             + second_monster_penalty
         )
         reward_value = float(np.clip(reward_value, -1.5, 1.5))
@@ -324,6 +333,8 @@ class Preprocessor:
             "repeat_explore_penalty": float(repeat_explore_penalty),
             "flash_escape_reward": float(flash_escape_reward),
             "flash_abuse_penalty": float(flash_abuse_penalty),
+            "post_flash_move_bonus": float(post_flash_move_bonus),
+            "post_flash_idle_penalty": float(post_flash_idle_penalty),
             "second_monster_penalty": float(second_monster_penalty),
             "reward_total": float(reward_value),
         }
@@ -398,11 +409,47 @@ class Preprocessor:
         flashed = flash_cd > self.last_flash_cd + 100.0
         if not flashed:
             return 0.0, 0.0
+        # Start a short post-flash behavior window to discourage "flash then idle".
+        self.post_flash_window = 8
         openness = self._compute_openness(obstacle_channel)
         escaped = cur_min_dist_norm - self.last_min_monster_dist_norm
         if escaped > 0.05 or openness > 0.6:
             return 0.25, 0.0
         return 0.0, -0.08
+
+    def _compute_post_flash_momentum(self, hero_pos, cur_min_dist_norm, cur_min_treasure_dist_norm):
+        if self.post_flash_window <= 0:
+            return 0.0, 0.0
+
+        self.post_flash_window -= 1
+
+        if self.last_hero_pos is None:
+            return 0.0, 0.0
+
+        hx, hz = float(hero_pos.get("x", 0.0)), float(hero_pos.get("z", 0.0))
+        dx = hx - self.last_hero_pos[0]
+        dz = hz - self.last_hero_pos[1]
+        disp = np.sqrt(dx * dx + dz * dz)
+
+        move_bonus = 0.0
+        idle_penalty = 0.0
+
+        # Encourage sustained movement for a few steps after flash.
+        if disp > 0.35:
+            move_bonus += 0.02
+        elif disp < 0.2:
+            idle_penalty -= 0.04
+
+        # If monsters are relatively far, emphasize "don't stand still".
+        if cur_min_dist_norm > 0.35 and disp < 0.25:
+            idle_penalty -= 0.03
+
+        # Small extra incentive to keep approaching treasure after a successful escape.
+        treasure_progress = self.last_min_treasure_dist_norm - cur_min_treasure_dist_norm
+        if treasure_progress > 0.0:
+            move_bonus += min(0.03, 0.12 * treasure_progress)
+
+        return move_bonus, idle_penalty
 
     def _extract_monster_relative(self, monster, hero_pos):
         rel = monster.get("relative_pos", {}) if isinstance(monster, dict) else {}
