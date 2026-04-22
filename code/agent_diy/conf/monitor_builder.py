@@ -168,13 +168,23 @@ def build_monitor():
         )
         .end_panel()
         .add_panel(
-            name="终局奖励",
-            name_en="final_reward",
+            name="Critic梯度范数",
+            name_en="critic_grad_norm",
             type="line",
         )
         .add_metric(
-            metrics_name="final_reward",
-            expr="avg(final_reward{})",
+            metrics_name="critic_grad_norm",
+            expr="avg(critic_grad_norm{})",
+        )
+        .end_panel()
+        .add_panel(
+            name="Actor梯度范数",
+            name_en="actor_grad_norm",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="actor_grad_norm",
+            expr="avg(actor_grad_norm{})",
         )
         .end_panel()
         .add_panel(
