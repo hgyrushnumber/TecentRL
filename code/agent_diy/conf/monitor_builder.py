@@ -177,6 +177,16 @@ def build_monitor():
             expr="avg(comp_treasure_score{})",
         )
         .end_panel()
+        .add_panel(
+            name="宝箱接近分项",
+            name_en="comp_treasure_approach",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="comp_treasure_approach",
+            expr="avg(comp_treasure_approach{})",
+        )
+        .end_panel()
         .end_group()
         .build()
     )

@@ -182,6 +182,23 @@ class Preprocessor:
         step_norm = _norm(self.step_no, self.max_step)
         survival_ratio = step_norm
         progress_feat = np.array([step_norm, survival_ratio], dtype=np.float32)
+        treasure_dir_feat = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+        nearest_treasure_dist = float("inf")
+        for t in treasure_list:
+            if not isinstance(t, dict):
+                continue
+            t_pos = t.get("pos", {})
+            tx, tz = t_pos.get("x"), t_pos.get("z")
+            if tx is None or tz is None:
+                continue
+            dx = float(tx) - float(hero_pos.get("x", 0.0))
+            dz = float(tz) - float(hero_pos.get("z", 0.0))
+            dist = np.sqrt(dx * dx + dz * dz)
+            if dist < nearest_treasure_dist and dist > 1e-6:
+                nearest_treasure_dist = dist
+                treasure_dir_feat[0] = float(np.clip(dx / dist, -1.0, 1.0))
+                treasure_dir_feat[1] = float(np.clip(dz / dist, -1.0, 1.0))
+                treasure_dir_feat[2] = float(_norm(dist, MAP_SIZE * 1.41))
 
         # Concatenate features / 拼接特征
         feature = np.concatenate(
@@ -193,6 +210,7 @@ class Preprocessor:
                 map_feat,
                 np.array(legal_action, dtype=np.float32),
                 progress_feat,
+                treasure_dir_feat,
             ]
         )
 
@@ -247,7 +265,7 @@ class Preprocessor:
         corridor_reward = 0.05 * self._compute_openness(obstacle_channel)
 
         # Sparse rewards / 稀疏奖励
-        treasure_score_reward = 0.35 if treasure_score > self.last_treasure_score else 0.0
+        treasure_score_reward = 0.6 if treasure_score > self.last_treasure_score else 0.0
         buff_reward = 0.2 if buff_count > self.last_buff_count else 0.0
 
         # Risk penalties / 风险惩罚

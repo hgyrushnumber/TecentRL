@@ -17,7 +17,7 @@ class Config:
     MAP_CHANNELS = 4  # hero, monster, treasure, obstacle
     MAP_FEATURE_DIM = LOCAL_MAP_WINDOW * LOCAL_MAP_WINDOW * MAP_CHANNELS
 
-    # Feature dimensions / 特征维度（共1802维）
+    # Feature dimensions / 特征维度（共1805维）
     FEATURES = [
         4,
         5,
@@ -26,6 +26,7 @@ class Config:
         MAP_FEATURE_DIM,
         16,
         2,
+        3,  # nearest treasure direction + distance (dx, dz, dist_norm)
     ]
     FEATURE_SPLIT_SHAPE = FEATURES
     FEATURE_LEN = sum(FEATURE_SPLIT_SHAPE)

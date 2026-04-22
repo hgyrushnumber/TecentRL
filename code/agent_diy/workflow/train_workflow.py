@@ -179,6 +179,9 @@ class EpisodeRunner:
                             "final_reward": round(float(final_reward[0]), 4),
                             "comp_survive": round(reward_component_sums.get("survive_reward", 0.0), 4),
                             "comp_treasure_score": round(reward_component_sums.get("treasure_score_reward", 0.0), 4),
+                            "comp_treasure_approach": round(
+                                reward_component_sums.get("treasure_approach_reward", 0.0), 4
+                            ),
                             "comp_danger_penalty": round(reward_component_sums.get("danger_penalty", 0.0), 4),
                             "comp_dist_shaping": round(reward_component_sums.get("dist_shaping", 0.0), 4),
                             "comp_repeat_penalty": round(reward_component_sums.get("repeat_explore_penalty", 0.0), 4),
