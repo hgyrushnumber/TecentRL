@@ -21,7 +21,6 @@ from common_python.utils.workflow_disaster_recovery import handle_disaster_recov
 
 
 def workflow(envs, agents, logger=None, monitor=None, *args, **kwargs):
-    last_save_model_time = time.time()
     env = envs[0]
     agent = agents[0]
 
@@ -45,15 +44,6 @@ def workflow(envs, agents, logger=None, monitor=None, *args, **kwargs):
 
             agent.send_sample_data(g_data)
             g_data.clear()
-
-            now = time.time()
-            if now - last_save_model_time >= 1800:
-                try:
-                    agent.save_model(id="latest")
-                    last_save_model_time = now
-                except Exception as e:
-                    if logger:
-                        logger.error(f"save_model Exception {e}")
 
 
 class EpisodeRunner:
@@ -83,11 +73,6 @@ class EpisodeRunner:
                 continue
 
             self.agent.reset(env_obs)
-
-            try:
-                self.agent.load_model(id="latest")
-            except Exception as e:
-                self.logger.warning(f"load_model latest failed, continue with current params: {e}")
 
             obs_data, remain_info = self.agent.observation_process(env_obs)
             if obs_data is None:
