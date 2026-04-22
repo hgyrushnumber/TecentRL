@@ -14,20 +14,19 @@ import os
 import time
 
 import numpy as np
-from agent_ppo.feature.definition import SampleData, sample_process
+from agent_diy.feature.definition import SampleData, sample_process
 from tools.metrics_utils import get_training_metrics
 from tools.train_env_conf_validate import read_usr_conf
 from common_python.utils.workflow_disaster_recovery import handle_disaster_recovery
 
 
 def workflow(envs, agents, logger=None, monitor=None, *args, **kwargs):
-    last_save_model_time = time.time()
     env = envs[0]
     agent = agents[0]
 
-    usr_conf = read_usr_conf("agent_ppo/conf/train_env_conf.toml", logger)
+    usr_conf = read_usr_conf("agent_diy/conf/train_env_conf.toml", logger)
     if usr_conf is None:
-        logger.error("usr_conf is None, please check agent_ppo/conf/train_env_conf.toml")
+        logger.error("usr_conf is None, please check agent_diy/conf/train_env_conf.toml")
         return
 
     episode_runner = EpisodeRunner(
@@ -45,15 +44,6 @@ def workflow(envs, agents, logger=None, monitor=None, *args, **kwargs):
 
             agent.send_sample_data(g_data)
             g_data.clear()
-
-            now = time.time()
-            if now - last_save_model_time >= 1800:
-                try:
-                    agent.save_model(id="latest")
-                    last_save_model_time = now
-                except Exception as e:
-                    if logger:
-                        logger.error(f"save_model Exception {e}")
 
 
 class EpisodeRunner:
@@ -84,11 +74,6 @@ class EpisodeRunner:
 
             self.agent.reset(env_obs)
 
-            try:
-                self.agent.load_model(id="latest")
-            except Exception as e:
-                self.logger.warning(f"load_model latest failed, continue with current params: {e}")
-
             obs_data, remain_info = self.agent.observation_process(env_obs)
             if obs_data is None:
                 self.logger.error("observation_process returned None on reset")
@@ -99,6 +84,7 @@ class EpisodeRunner:
             done = False
             step = 0
             total_reward = 0.0
+            reward_component_sums = {}
 
             self.logger.info(f"Episode {self.episode_cnt} start")
 
@@ -150,6 +136,9 @@ class EpisodeRunner:
 
                 reward = np.array(next_remain_info.get("reward", [0.0]), dtype=np.float32)
                 total_reward += float(reward[0])
+                reward_components = next_remain_info.get("reward_components", {})
+                for k, v in reward_components.items():
+                    reward_component_sums[k] = reward_component_sums.get(k, 0.0) + float(v)
 
                 final_reward = np.zeros(1, dtype=np.float32)
                 if done:
@@ -157,11 +146,11 @@ class EpisodeRunner:
                     total_score = env_info.get("total_score", 0)
 
                     if terminated:
-                        final_reward[0] = -10.0
-                        result_str = "FAIL"
+                        result_str = "DEAD"
+                    elif truncated:
+                        result_str = "TIMEOUT_DONE"
                     else:
-                        final_reward[0] = 10.0
-                        result_str = "WIN"
+                        result_str = "ABNORMAL"
 
                     self.logger.info(
                         f"[GAMEOVER] episode:{self.episode_cnt} steps:{step} "
@@ -181,15 +170,18 @@ class EpisodeRunner:
                 collector.append(frame)
 
                 if done:
-                    if collector:
-                        collector[-1].reward = collector[-1].reward + final_reward
-
                     now = time.time()
                     if now - self.last_report_monitor_time >= 60 and self.monitor:
                         monitor_data = {
                             "reward": round(total_reward + float(final_reward[0]), 4),
                             "episode_steps": step,
                             "episode_cnt": self.episode_cnt,
+                            "final_reward": round(float(final_reward[0]), 4),
+                            "comp_survive": round(reward_component_sums.get("survive_reward", 0.0), 4),
+                            "comp_treasure_score": round(reward_component_sums.get("treasure_score_reward", 0.0), 4),
+                            "comp_danger_penalty": round(reward_component_sums.get("danger_penalty", 0.0), 4),
+                            "comp_dist_shaping": round(reward_component_sums.get("dist_shaping", 0.0), 4),
+                            "comp_repeat_penalty": round(reward_component_sums.get("repeat_explore_penalty", 0.0), 4),
                         }
                         self.monitor.put_data({os.getpid(): monitor_data})
                         self.last_report_monitor_time = now
