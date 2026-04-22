@@ -68,13 +68,43 @@ def build_monitor():
         )
         .end_panel()
         .add_panel(
-            name="熵损失",
-            name_en="entropy_loss",
+            name="策略熵",
+            name_en="entropy",
             type="line",
         )
         .add_metric(
-            metrics_name="entropy_loss",
-            expr="avg(entropy_loss{})",
+            metrics_name="entropy",
+            expr="avg(entropy{})",
+        )
+        .end_panel()
+        .add_panel(
+            name="熵偏差(|H-H*|)",
+            name_en="entropy_gap",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="entropy_gap",
+            expr="avg(entropy_gap{})",
+        )
+        .end_panel()
+        .add_panel(
+            name="熵上界(理论)",
+            name_en="entropy_max_theory",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="entropy_max_theory",
+            expr="avg(entropy_max_theory{})",
+        )
+        .end_panel()
+        .add_panel(
+            name="熵利用率(H/Hmax)",
+            name_en="entropy_ratio",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="entropy_ratio",
+            expr="avg(entropy_ratio{})",
         )
         .end_panel()
         .add_panel(
@@ -165,6 +195,16 @@ def build_monitor():
         .add_metric(
             metrics_name="comp_treasure_score",
             expr="avg(comp_treasure_score{})",
+        )
+        .end_panel()
+        .add_panel(
+            name="宝箱接近分项",
+            name_en="comp_treasure_approach",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="comp_treasure_approach",
+            expr="avg(comp_treasure_approach{})",
         )
         .end_panel()
         .end_group()

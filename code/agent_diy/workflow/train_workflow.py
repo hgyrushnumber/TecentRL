@@ -21,7 +21,6 @@ from common_python.utils.workflow_disaster_recovery import handle_disaster_recov
 
 
 def workflow(envs, agents, logger=None, monitor=None, *args, **kwargs):
-    last_save_model_time = time.time()
     env = envs[0]
     agent = agents[0]
 
@@ -45,15 +44,6 @@ def workflow(envs, agents, logger=None, monitor=None, *args, **kwargs):
 
             agent.send_sample_data(g_data)
             g_data.clear()
-
-            now = time.time()
-            if now - last_save_model_time >= 1800:
-                try:
-                    agent.save_model(id="latest")
-                    last_save_model_time = now
-                except Exception as e:
-                    if logger:
-                        logger.error(f"save_model Exception {e}")
 
 
 class EpisodeRunner:
@@ -83,11 +73,6 @@ class EpisodeRunner:
                 continue
 
             self.agent.reset(env_obs)
-
-            try:
-                self.agent.load_model(id="latest")
-            except Exception as e:
-                self.logger.warning(f"load_model latest failed, continue with current params: {e}")
 
             obs_data, remain_info = self.agent.observation_process(env_obs)
             if obs_data is None:
@@ -194,6 +179,9 @@ class EpisodeRunner:
                             "final_reward": round(float(final_reward[0]), 4),
                             "comp_survive": round(reward_component_sums.get("survive_reward", 0.0), 4),
                             "comp_treasure_score": round(reward_component_sums.get("treasure_score_reward", 0.0), 4),
+                            "comp_treasure_approach": round(
+                                reward_component_sums.get("treasure_approach_reward", 0.0), 4
+                            ),
                             "comp_danger_penalty": round(reward_component_sums.get("danger_penalty", 0.0), 4),
                             "comp_dist_shaping": round(reward_component_sums.get("dist_shaping", 0.0), 4),
                             "comp_repeat_penalty": round(reward_component_sums.get("repeat_explore_penalty", 0.0), 4),

@@ -44,6 +44,7 @@ class Model(nn.Module):
             + Config.FEATURES[3]
             + Config.FEATURES[5]
             + Config.FEATURES[6]
+            + Config.FEATURES[7]
         )
         map_flat_dim = Config.FEATURES[4]
 
@@ -85,6 +86,8 @@ class Model(nn.Module):
         rel_end = m2_end + Config.FEATURES[3]
         map_end = rel_end + Config.FEATURES[4]
         legal_end = map_end + Config.FEATURES[5]
+        progress_end = legal_end + Config.FEATURES[6]
+        treasure_dir_end = progress_end + Config.FEATURES[7]
 
         hero_feat = obs[:, :hero_end]
         m1_feat = obs[:, hero_end:m1_end]
@@ -92,9 +95,10 @@ class Model(nn.Module):
         rel_monster_feat = obs[:, m2_end:rel_end]
         map_flat = obs[:, rel_end:map_end]
         legal_feat = obs[:, map_end:legal_end]
-        progress_feat = obs[:, legal_end:]
+        progress_feat = obs[:, legal_end:progress_end]
+        treasure_dir_feat = obs[:, progress_end:treasure_dir_end]
 
-        scalar_feat = torch.cat([hero_feat, m1_feat, m2_feat, rel_monster_feat, legal_feat, progress_feat], dim=1)
+        scalar_feat = torch.cat([hero_feat, m1_feat, m2_feat, rel_monster_feat, legal_feat, progress_feat, treasure_dir_feat], dim=1)
         map_tensor = map_flat.view(-1, self.map_channels, self.map_window, self.map_window)
 
         map_embed = self.map_proj(self.map_encoder(map_tensor))
