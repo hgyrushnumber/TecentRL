@@ -487,6 +487,40 @@ class Preprocessor:
 
         return move_bonus, idle_penalty
 
+    def _compute_post_flash_momentum(self, hero_pos, cur_min_dist_norm, cur_min_treasure_dist_norm):
+        if self.post_flash_window <= 0:
+            return 0.0, 0.0
+
+        self.post_flash_window -= 1
+
+        if self.last_hero_pos is None:
+            return 0.0, 0.0
+
+        hx, hz = float(hero_pos.get("x", 0.0)), float(hero_pos.get("z", 0.0))
+        dx = hx - self.last_hero_pos[0]
+        dz = hz - self.last_hero_pos[1]
+        disp = np.sqrt(dx * dx + dz * dz)
+
+        move_bonus = 0.0
+        idle_penalty = 0.0
+
+        # Encourage sustained movement for a few steps after flash.
+        if disp > 0.35:
+            move_bonus += 0.02
+        elif disp < 0.2:
+            idle_penalty -= 0.04
+
+        # If monsters are relatively far, emphasize "don't stand still".
+        if cur_min_dist_norm > 0.35 and disp < 0.25:
+            idle_penalty -= 0.03
+
+        # Small extra incentive to keep approaching treasure after a successful escape.
+        treasure_progress = self.last_min_treasure_dist_norm - cur_min_treasure_dist_norm
+        if treasure_progress > 0.0:
+            move_bonus += min(0.03, 0.12 * treasure_progress)
+
+        return move_bonus, idle_penalty
+
     def _extract_monster_relative(self, monster, hero_pos):
         rel = monster.get("relative_pos", {}) if isinstance(monster, dict) else {}
         dx = rel.get("x", rel.get("dx", monster.get("relative_x", None)))

@@ -88,6 +88,26 @@ def build_monitor():
         )
         .end_panel()
         .add_panel(
+            name="熵上界(理论)",
+            name_en="entropy_max_theory",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="entropy_max_theory",
+            expr="avg(entropy_max_theory{})",
+        )
+        .end_panel()
+        .add_panel(
+            name="熵利用率(H/Hmax)",
+            name_en="entropy_ratio",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="entropy_ratio",
+            expr="avg(entropy_ratio{})",
+        )
+        .end_panel()
+        .add_panel(
             name="Q目标均值",
             name_en="q_target_mean",
             type="line",

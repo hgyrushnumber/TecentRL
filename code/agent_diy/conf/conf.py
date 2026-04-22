@@ -45,7 +45,7 @@ class Config:
     # SAC hyperparameters
     GAMMA = 0.99
     TAU = 0.005
-    ALPHA = 0.5
+    ALPHA = 0.2
     AUTO_ALPHA = True
     TARGET_ENTROPY = 2.0
     ALPHA_LR = 1e-4
