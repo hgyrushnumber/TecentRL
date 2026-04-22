@@ -35,12 +35,14 @@ class Algorithm:
         self.alpha = Config.ALPHA
         self.auto_alpha = getattr(Config, "AUTO_ALPHA", False)
         self.target_entropy = getattr(Config, "TARGET_ENTROPY", 2.0)
+        self.alpha_min = float(getattr(Config, "ALPHA_MIN", 1e-3))
+        self.alpha_max = float(getattr(Config, "ALPHA_MAX", 10.0))
         self.alpha_loss_value = 0.0
         if self.auto_alpha:
             init_alpha = max(float(Config.ALPHA), 1e-6)
             self.log_alpha = torch.tensor(np.log(init_alpha), device=self.device, requires_grad=True)
             self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=getattr(Config, "ALPHA_LR", 1e-4))
-            self.alpha = float(self.log_alpha.exp().item())
+            self.alpha = float(self.log_alpha.exp().clamp(self.alpha_min, self.alpha_max).item())
 
         self.last_report_monitor_time = 0
         self.train_step = 0
@@ -81,10 +83,13 @@ class Algorithm:
         self.optimizer.step()
         if self.auto_alpha:
             self.alpha_optimizer.zero_grad()
-            alpha_loss = (self.log_alpha.exp() * (info["entropy"] - self.target_entropy).detach()).mean()
+            # Optimize log(alpha) directly for better numerical stability.
+            alpha_loss = (self.log_alpha * (info["entropy"] - self.target_entropy).detach()).mean()
             alpha_loss.backward()
             self.alpha_optimizer.step()
-            self.alpha = float(self.log_alpha.exp().item())
+            with torch.no_grad():
+                self.log_alpha.data.clamp_(np.log(self.alpha_min), np.log(self.alpha_max))
+            self.alpha = float(self.log_alpha.exp().clamp(self.alpha_min, self.alpha_max).item())
             self.alpha_loss_value = float(alpha_loss.item())
         self._soft_update_target()
         self.train_step += 1
@@ -95,7 +100,10 @@ class Algorithm:
                 "total_loss": round(total_loss.item(), 4),
                 "value_loss": round(info["critic_loss"].item(), 4),
                 "policy_loss": round(info["actor_loss"].item(), 4),
-                "entropy_loss": round(info["entropy"].item(), 4),
+                # NOTE: this is policy entropy value (not a standalone optimized "entropy loss")
+                "entropy": round(info["entropy"].item(), 4),
+                "entropy_loss": round(info["entropy"].item(), 4),  # backward-compatible metric key
+                "entropy_gap": round(abs(info["entropy"].item() - self.target_entropy), 4),
                 "reward": round(reward.mean().item(), 4),
                 "q_target_mean": round(info["q_target_mean"].item(), 4),
                 "q1_mean": round(info["q1_mean"].item(), 4),
@@ -113,7 +121,8 @@ class Algorithm:
                     f"total_loss:{results['total_loss']} "
                     f"value_loss:{results['value_loss']} "
                     f"policy_loss:{results['policy_loss']} "
-                    f"entropy_loss:{results['entropy_loss']}"
+                    f"entropy:{results['entropy']} "
+                    f"entropy_gap:{results['entropy_gap']}"
                 )
             if self.monitor:
                 self.monitor.put_data({os.getpid(): results})
