@@ -35,8 +35,8 @@ class Algorithm:
         self.alpha = Config.ALPHA
         self.auto_alpha = getattr(Config, "AUTO_ALPHA", False)
         self.target_entropy = getattr(Config, "TARGET_ENTROPY", 2.0)
-        self.alpha_min = float(getattr(Config, "ALPHA_MIN", 1e-3))
-        self.alpha_max = float(getattr(Config, "ALPHA_MAX", 10.0))
+        self.alpha_min = float(getattr(Config, "ALPHA_MIN", 1e-4))
+        self.alpha_max = float(getattr(Config, "ALPHA_MAX", 20.0))
         self.target_q_clip = float(getattr(Config, "TARGET_Q_CLIP", 8.0))
         self.actor_update_interval = int(max(1, getattr(Config, "ACTOR_UPDATE_INTERVAL", 2)))
         self.critic_use_huber = bool(getattr(Config, "CRITIC_USE_HUBER", True))
