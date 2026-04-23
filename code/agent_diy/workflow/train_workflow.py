@@ -12,6 +12,7 @@ Training workflow for Gorge Chase SAC.
 
 import os
 import time
+import json
 
 import numpy as np
 from agent_diy.feature.definition import SampleData, sample_process
@@ -143,6 +144,11 @@ class EpisodeRunner:
                 reward = np.array(next_remain_info.get("reward", [0.0]), dtype=np.float32)
                 total_reward += float(reward[0])
                 reward_components = next_remain_info.get("reward_components", {})
+                env_info_snapshot = next_remain_info.get("env_info", {})
+                if self.logger and (step == 1 or step % 50 == 0):
+                    self.logger.info(
+                        f"[ENV_INFO] episode:{self.episode_cnt} step:{step} env_info:{json.dumps(env_info_snapshot, ensure_ascii=False)}"
+                    )
                 for k, v in reward_components.items():
                     reward_component_sums[k] = reward_component_sums.get(k, 0.0) + float(v)
 
