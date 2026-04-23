@@ -118,6 +118,16 @@ def build_monitor():
         )
         .end_panel()
         .add_panel(
+            name="梯度范数(裁剪后)",
+            name_en="grad_norm_post",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="grad_norm_post",
+            expr="avg(grad_norm_post{})",
+        )
+        .end_panel()
+        .add_panel(
             name="温度系数",
             name_en="alpha",
             type="line",
@@ -158,6 +168,16 @@ def build_monitor():
         )
         .end_panel()
         .add_panel(
+            name="Critic梯度范数(裁剪后)",
+            name_en="critic_grad_norm_post",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="critic_grad_norm_post",
+            expr="avg(critic_grad_norm_post{})",
+        )
+        .end_panel()
+        .add_panel(
             name="Actor梯度范数",
             name_en="actor_grad_norm",
             type="line",
@@ -165,6 +185,16 @@ def build_monitor():
         .add_metric(
             metrics_name="actor_grad_norm",
             expr="avg(actor_grad_norm{})",
+        )
+        .end_panel()
+        .add_panel(
+            name="Actor梯度范数(裁剪后)",
+            name_en="actor_grad_norm_post",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="actor_grad_norm_post",
+            expr="avg(actor_grad_norm_post{})",
         )
         .end_panel()
         .add_panel(
@@ -195,6 +225,16 @@ def build_monitor():
         .add_metric(
             metrics_name="comp_treasure_approach",
             expr="avg(comp_treasure_approach{})",
+        )
+        .end_panel()
+        .add_panel(
+            name="距离塑形分项",
+            name_en="comp_dist_shaping",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="comp_dist_shaping",
+            expr="avg(comp_dist_shaping{})",
         )
         .end_panel()
         .end_group()

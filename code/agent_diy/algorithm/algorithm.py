@@ -58,6 +58,8 @@ class Algorithm:
         self.last_entropy = 0.0
         self.last_critic_grad_norm = 0.0
         self.last_actor_grad_norm = 0.0
+        self.last_critic_grad_norm_post = 0.0
+        self.last_actor_grad_norm_post = 0.0
 
         self.target_model = copy.deepcopy(self.model).to(self.device)
         self.target_model.load_state_dict(self.model.state_dict())
@@ -90,6 +92,7 @@ class Algorithm:
         )
         critic_loss.backward()
         critic_grad_norm = torch.nn.utils.clip_grad_norm_(self.parameters, Config.GRAD_CLIP_RANGE)
+        critic_grad_norm_post = self._grad_total_norm(self.parameters)
         self.optimizer.step()
 
         actor_grad_norm = torch.tensor(0.0, device=self.device)
@@ -98,7 +101,10 @@ class Algorithm:
             self.optimizer.zero_grad()
             actor_loss.backward()
             actor_grad_norm = torch.nn.utils.clip_grad_norm_(self.parameters, Config.GRAD_CLIP_RANGE)
+            actor_grad_norm_post = self._grad_total_norm(self.parameters)
             self.optimizer.step()
+        else:
+            actor_grad_norm_post = torch.tensor(0.0, device=self.device)
 
         self.last_critic_loss = float(critic_loss.item())
         self.last_actor_loss = float(actor_loss.item())
@@ -109,6 +115,12 @@ class Algorithm:
         self.last_entropy = float(actor_entropy.item())
         self.last_critic_grad_norm = float(critic_grad_norm.item() if hasattr(critic_grad_norm, "item") else critic_grad_norm)
         self.last_actor_grad_norm = float(actor_grad_norm.item() if hasattr(actor_grad_norm, "item") else actor_grad_norm)
+        self.last_critic_grad_norm_post = float(
+            critic_grad_norm_post.item() if hasattr(critic_grad_norm_post, "item") else critic_grad_norm_post
+        )
+        self.last_actor_grad_norm_post = float(
+            actor_grad_norm_post.item() if hasattr(actor_grad_norm_post, "item") else actor_grad_norm_post
+        )
 
         if self.auto_alpha:
             self.alpha_optimizer.zero_grad()
@@ -144,6 +156,9 @@ class Algorithm:
                 "grad_norm": round(max(self.last_critic_grad_norm, self.last_actor_grad_norm), 4),
                 "critic_grad_norm": round(self.last_critic_grad_norm, 4),
                 "actor_grad_norm": round(self.last_actor_grad_norm, 4),
+                "grad_norm_post": round(max(self.last_critic_grad_norm_post, self.last_actor_grad_norm_post), 4),
+                "critic_grad_norm_post": round(self.last_critic_grad_norm_post, 4),
+                "actor_grad_norm_post": round(self.last_actor_grad_norm_post, 4),
                 "alpha": round(self.alpha, 4),
                 "alpha_loss": round(self.alpha_loss_value, 4),
                 "actor_update_interval": self.actor_update_interval,
@@ -212,3 +227,10 @@ class Algorithm:
         with torch.no_grad():
             for target_param, param in zip(self.target_model.parameters(), self.model.parameters()):
                 target_param.data.copy_(target_param.data * (1.0 - self.tau) + param.data * self.tau)
+
+    def _grad_total_norm(self, parameters):
+        grads = [p.grad.detach() for p in parameters if p.grad is not None]
+        if not grads:
+            return torch.tensor(0.0, device=self.device)
+        norms = [torch.norm(g, p=2) for g in grads]
+        return torch.norm(torch.stack(norms), p=2)
