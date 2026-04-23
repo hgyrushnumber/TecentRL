@@ -51,11 +51,14 @@ class Preprocessor:
         self.last_step_score = 0.0
         self.last_treasure_score = 0.0
         self.last_buff_count = 0.0
+        self.init_remaining_treasure_count = None
+        self.last_remaining_treasure_count = None
         self.last_hero_pos = None
         self.last_flash_cd = 0.0
         self.visit_counter = {}
         self.recent_positions = deque(maxlen=20)
         self.last_reward_components = {}
+        self.last_env_info = {}
         self.last_survival_stage = 0
         # Post-flash behavior window / 闪现后行为约束窗口
         self.post_flash_window = 0
@@ -82,6 +85,8 @@ class Preprocessor:
         flash_cd_norm = _norm(hero["flash_cooldown"], MAX_FLASH_CD)
         buff_remain_norm = _norm(hero["buff_remaining_time"], MAX_BUFF_DURATION)
 
+        # Keep 4D shape unchanged and include hero absolute coordinates.
+        # 保持4维不变，并记录英雄绝对坐标（归一化）。
         hero_feat = np.array([hero_x_norm, hero_z_norm, flash_cd_norm, buff_remain_norm], dtype=np.float32)
 
         # Monster features (5D x 2) / 怪物特征
@@ -93,20 +98,30 @@ class Preprocessor:
                 is_in_view = float(m.get("is_in_view", 0))
                 m_pos = m["pos"]
                 if is_in_view:
-                    m_x_norm = _norm(m_pos["x"], MAP_SIZE)
-                    m_z_norm = _norm(m_pos["z"], MAP_SIZE)
                     m_speed_norm = _norm(m.get("speed", 1), MAX_MONSTER_SPEED)
+                    dx = float(m_pos["x"]) - float(hero_pos["x"])
+                    dz = float(m_pos["z"]) - float(hero_pos["z"])
+                    raw_dist = np.sqrt(dx * dx + dz * dz)
+                    if raw_dist > 1e-6:
+                        m_dir_x = float(np.clip(dx / raw_dist, -1.0, 1.0))
+                        m_dir_z = float(np.clip(dz / raw_dist, -1.0, 1.0))
+                    else:
+                        m_dir_x, m_dir_z = 0.0, 0.0
 
-                    # Euclidean distance / 欧式距离
-                    raw_dist = np.sqrt((hero_pos["x"] - m_pos["x"]) ** 2 + (hero_pos["z"] - m_pos["z"]) ** 2)
-                    dist_norm = _norm(raw_dist, MAP_SIZE * 1.41)
+                    # Prefer env-provided bucket distance when available.
+                    # 优先使用环境直接提供的距离桶（hero_l2_distance: 0~5）。
+                    dist_bucket = m.get("hero_l2_distance", None)
+                    if dist_bucket is not None:
+                        dist_norm = _norm(float(dist_bucket), MAX_DIST_BUCKET)
+                    else:
+                        dist_norm = _norm(raw_dist, MAP_SIZE * 1.41)
                 else:
-                    m_x_norm = 0.0
-                    m_z_norm = 0.0
+                    m_dir_x = 0.0
+                    m_dir_z = 0.0
                     m_speed_norm = 0.0
                     dist_norm = 1.0
                 monster_feats.append(
-                    np.array([is_in_view, m_x_norm, m_z_norm, m_speed_norm, dist_norm], dtype=np.float32)
+                    np.array([is_in_view, m_dir_x, m_dir_z, m_speed_norm, dist_norm], dtype=np.float32)
                 )
             else:
                 monster_feats.append(np.zeros(5, dtype=np.float32))
@@ -120,62 +135,40 @@ class Preprocessor:
                 rel_monster_feat.extend([0.0, 0.0, 1.0])
         rel_monster_feat = np.array(rel_monster_feat, dtype=np.float32)
 
-        # Spatial map features (C x 21 x 21) / 空间特征图（多通道）
-        # channel 0: hero, 1: monster, 2: treasure, 3: obstacle
-        map_tensor = np.zeros((MAP_CHANNELS, LOCAL_MAP_WINDOW, LOCAL_MAP_WINDOW), dtype=np.float32)
-        center = LOCAL_MAP_WINDOW // 2
-        map_tensor[0, center, center] = 1.0
+        # Spatial map features (1 x 21 x 21) / 空间特征图（仅障碍）
+        # monster / treasure 改由标量关系特征学习。
 
-        # Place monsters on monster channel / 将怪物投影到怪物通道
-        for m in monsters:
-            if float(m.get("is_in_view", 0)) <= 0:
-                continue
-            m_pos = m.get("pos", {})
-            self._place_entity(
-                map_tensor[1],
-                hero_pos.get("x", 0.0),
-                hero_pos.get("z", 0.0),
-                m_pos.get("x", 0.0),
-                m_pos.get("z", 0.0),
-            )
-
-        # Place treasures on treasure channel / 将宝箱投影到宝箱通道
+        # Treasure list is still used by scalar features and reward.
+        # 宝箱列表仍用于标量特征与奖励计算。
         treasure_list = frame_state.get("treasures", frame_state.get("treasure", []))
         if isinstance(treasure_list, dict):
             treasure_list = [treasure_list]
-        for t in treasure_list:
-            t_pos = t.get("pos", {}) if isinstance(t, dict) else {}
-            self._place_entity(
-                map_tensor[2],
-                hero_pos.get("x", 0.0),
-                hero_pos.get("z", 0.0),
-                t_pos.get("x", 0.0),
-                t_pos.get("z", 0.0),
-            )
 
         # Build obstacle channel from local map occupancy / 障碍物通道
-        # map_info 定义：1=可通行，0=障碍物
+        # map_info 定义：1=可通行，0=障碍物。
+        # 以英雄坐标为窗口中心，越界区域按障碍处理。
         obstacle_channel = np.zeros((LOCAL_MAP_WINDOW, LOCAL_MAP_WINDOW), dtype=np.float32)
-        if map_info is not None and len(map_info) >= LOCAL_MAP_WINDOW:
+        if map_info is not None and len(map_info) > 0 and len(map_info[0]) > 0:
             radius = LOCAL_MAP_WINDOW // 2
-            for row in range(center - radius, center + radius + 1):
-                for col in range(center - radius, center + radius + 1):
-                    rr = row - (center - radius)
-                    cc = col - (center - radius)
-                    if 0 <= row < len(map_info) and 0 <= col < len(map_info[0]):
-                        obstacle_channel[rr, cc] = float(map_info[row][col] == 0)
-        map_tensor[3] = obstacle_channel
-        map_feat = map_tensor.reshape(-1)
+            hero_row = int(round(float(hero_pos.get("z", 0.0))))
+            hero_col = int(round(float(hero_pos.get("x", 0.0))))
+            map_rows = len(map_info)
+            map_cols = len(map_info[0])
+            for rr in range(LOCAL_MAP_WINDOW):
+                for cc in range(LOCAL_MAP_WINDOW):
+                    src_row = hero_row - radius + rr
+                    src_col = hero_col - radius + cc
+                    if 0 <= src_row < map_rows and 0 <= src_col < map_cols:
+                        obstacle_channel[rr, cc] = float(map_info[src_row][src_col] == 0)
+                    else:
+                        obstacle_channel[rr, cc] = 1.0
+        map_feat = obstacle_channel.reshape(-1)
 
         # Legal action mask (16D) / 合法动作掩码
+        # 仅使用环境提供的 bool[16] 掩码，不做兼容映射。
         legal_action = [1] * 16
-        if isinstance(legal_act_raw, list) and legal_act_raw:
-            if isinstance(legal_act_raw[0], bool):
-                for j in range(min(16, len(legal_act_raw))):
-                    legal_action[j] = int(legal_act_raw[j])
-            else:
-                valid_set = {int(a) for a in legal_act_raw if int(a) < 16}
-                legal_action = [1 if j in valid_set else 0 for j in range(16)]
+        if isinstance(legal_act_raw, list) and len(legal_act_raw) >= 16 and isinstance(legal_act_raw[0], bool):
+            legal_action = [int(legal_act_raw[j]) for j in range(16)]
 
         if sum(legal_action) == 0:
             legal_action = [1] * 16
@@ -185,22 +178,22 @@ class Preprocessor:
         survival_ratio = step_norm
         progress_feat = np.array([step_norm, survival_ratio], dtype=np.float32)
         treasure_dir_feat = np.array([0.0, 0.0, 1.0], dtype=np.float32)
-        nearest_treasure_dist = float("inf")
+        nearest_treasure_dist_norm = float("inf")
         for t in treasure_list:
             if not isinstance(t, dict):
                 continue
-            t_pos = t.get("pos", {})
-            tx, tz = t_pos.get("x"), t_pos.get("z")
-            if tx is None or tz is None:
+            bucket = t.get("hero_l2_distance", None)
+            direction = t.get("hero_relative_direction", None)
+            if bucket is not None and direction is not None:
+                bucket = float(bucket)
+                dist_norm = _norm(bucket, MAX_DIST_BUCKET)
+                if dist_norm < nearest_treasure_dist_norm:
+                    nearest_treasure_dist_norm = dist_norm
+                    dir_x, dir_z = self._direction_id_to_vec(int(direction))
+                    treasure_dir_feat[0] = dir_x
+                    treasure_dir_feat[1] = dir_z
+                    treasure_dir_feat[2] = dist_norm
                 continue
-            dx = float(tx) - float(hero_pos.get("x", 0.0))
-            dz = float(tz) - float(hero_pos.get("z", 0.0))
-            dist = np.sqrt(dx * dx + dz * dz)
-            if dist < nearest_treasure_dist and dist > 1e-6:
-                nearest_treasure_dist = dist
-                treasure_dir_feat[0] = float(np.clip(dx / dist, -1.0, 1.0))
-                treasure_dir_feat[1] = float(np.clip(dz / dist, -1.0, 1.0))
-                treasure_dir_feat[2] = float(_norm(dist, MAP_SIZE * 1.41))
 
         # Concatenate features / 拼接特征
         feature = np.concatenate(
@@ -231,6 +224,10 @@ class Preprocessor:
         for t in treasure_list:
             if not isinstance(t, dict):
                 continue
+            dist_bucket = t.get("hero_l2_distance", None)
+            if dist_bucket is not None:
+                cur_min_treasure_dist_norm = min(cur_min_treasure_dist_norm, _norm(float(dist_bucket), MAX_DIST_BUCKET))
+                continue
             t_pos = t.get("pos", {})
             tx, tz = t_pos.get("x"), t_pos.get("z")
             if tx is None or tz is None:
@@ -241,7 +238,20 @@ class Preprocessor:
         # Score-like signals / 分数型信号
         step_score = float(env_info.get("step_score", env_info.get("score", self.last_step_score)))
         treasure_score = float(env_info.get("treasure_score", self.last_treasure_score))
-        buff_count = float(env_info.get("buff_count", env_info.get("buff_num", self.last_buff_count)))
+        buff_count = float(
+            env_info.get(
+                "collected_buff",
+                env_info.get("buff_count", env_info.get("buff_num", self.last_buff_count)),
+            )
+        )
+        treasure_ids = env_info.get("treasure_id", [])
+        if not isinstance(treasure_ids, list):
+            treasure_ids = []
+        remaining_treasure_count = float(len(treasure_ids))
+        if self.init_remaining_treasure_count is None:
+            self.init_remaining_treasure_count = remaining_treasure_count
+        if self.last_remaining_treasure_count is None:
+            self.last_remaining_treasure_count = remaining_treasure_count
 
         # Dense rewards / 稠密奖励
         survive_reward = float(getattr(Config, "REWARD_SURVIVE", 0.01))
@@ -249,29 +259,28 @@ class Preprocessor:
         dist_shaping = float(getattr(Config, "REWARD_DIST_SHAPING", 0.08)) * (
             cur_min_dist_norm - self.last_min_monster_dist_norm
         )
-        treasure_approach_reward = 0.0
-        if bool(getattr(Config, "ENABLE_TREASURE_REWARD", False)):
-            treasure_progress = self.last_min_treasure_dist_norm - cur_min_treasure_dist_norm
-            treasure_approach_reward = float(getattr(Config, "REWARD_TREASURE_APPROACH", 0.12)) * max(0.0, treasure_progress)
-            treasure_approach_reward -= float(getattr(Config, "PENALTY_TREASURE_AWAY", 0.03)) * max(0.0, -treasure_progress)
-            if cur_min_dist_norm > float(getattr(Config, "TREASURE_SAFE_DISTANCE_TH", 0.35)) and treasure_progress > 0.0:
-                treasure_approach_reward += min(
-                    float(getattr(Config, "REWARD_TREASURE_SAFE_BONUS_CAP", 0.04)),
-                    float(getattr(Config, "REWARD_TREASURE_SAFE_BONUS_COEF", 0.16)) * treasure_progress,
-                )
+        treasure_progress = self.last_min_treasure_dist_norm - cur_min_treasure_dist_norm
+        treasure_approach_reward = float(getattr(Config, "REWARD_TREASURE_APPROACH", 0.12)) * max(0.0, treasure_progress)
+        treasure_approach_reward -= float(getattr(Config, "PENALTY_TREASURE_AWAY", 0.03)) * max(0.0, -treasure_progress)
+        if cur_min_dist_norm > float(getattr(Config, "TREASURE_SAFE_DISTANCE_TH", 0.35)) and treasure_progress > 0.0:
+            treasure_approach_reward += min(
+                float(getattr(Config, "REWARD_TREASURE_SAFE_BONUS_CAP", 0.04)),
+                float(getattr(Config, "REWARD_TREASURE_SAFE_BONUS_COEF", 0.16)) * treasure_progress,
+            )
 
         # Progressive survival reward / 生存递进奖励（步数越高奖励越大）
         progressive_step_reward = float(getattr(Config, "REWARD_PROGRESSIVE_STEP", 0.02)) * step_norm
 
-        # Progressive survival milestone reward / 生存里程碑递进奖励（50步更新一次）
-        current_stage = int(min(10, self.step_no // 50))
+        # Progressive survival milestone reward / 生存里程碑递进奖励（默认20步更新一次）
+        milestone_step = int(max(1, getattr(Config, "MILESTONE_STEP", 20)))
+        current_stage = int(min(50, self.step_no // milestone_step))
         stage_progress_reward = float(getattr(Config, "REWARD_STAGE_PROGRESS", 0.04)) * max(
             0, current_stage - self.last_survival_stage
         )
         self.last_survival_stage = current_stage
 
         # Speed-up stage shaping / 怪物加速前后强化
-        monster_speedup_step = float(env_info.get("monster_speedup", 500))
+        monster_speedup_step = float(env_info.get("monster_speed_boost_step", env_info.get("monster_speedup", 500)))
         near_speedup_ratio = _norm(self.step_no, max(monster_speedup_step, 1.0))
         near_speedup_bonus = float(getattr(Config, "REWARD_NEAR_SPEEDUP", 0.03)) * near_speedup_ratio * max(
             0.0, cur_min_dist_norm - 0.25
@@ -284,11 +293,12 @@ class Preprocessor:
         corridor_reward = float(getattr(Config, "REWARD_CORRIDOR", 0.05)) * self._compute_openness(obstacle_channel)
 
         # Sparse rewards / 稀疏奖励
-        treasure_score_reward = (
-            float(getattr(Config, "REWARD_TREASURE_SCORE", 0.6))
-            if bool(getattr(Config, "ENABLE_TREASURE_REWARD", False)) and treasure_score > self.last_treasure_score
-            else 0.0
-        )
+        # 以剩余宝箱ID列表长度为核心：长度越短，奖励越高；
+        # 且在宝箱数量发生减少时给予增量奖励。
+        treasure_delta = max(0.0, self.last_remaining_treasure_count - remaining_treasure_count)
+        init_count = max(1.0, float(self.init_remaining_treasure_count))
+        completion_ratio = float(np.clip((init_count - remaining_treasure_count) / init_count, 0.0, 1.0))
+        treasure_score_reward = float(getattr(Config, "REWARD_TREASURE_SCORE", 0.6)) * treasure_delta * (1.0 + completion_ratio)
         buff_reward = float(getattr(Config, "REWARD_BUFF", 0.2)) if buff_count > self.last_buff_count else 0.0
 
         # Risk penalties / 风险惩罚
@@ -371,8 +381,10 @@ class Preprocessor:
         self.last_step_score = step_score
         self.last_treasure_score = treasure_score
         self.last_buff_count = buff_count
+        self.last_remaining_treasure_count = remaining_treasure_count
         self.last_flash_cd = float(hero.get("flash_cooldown", 0.0))
         self.last_hero_pos = (float(hero_pos.get("x", 0.0)), float(hero_pos.get("z", 0.0)))
+        self.last_env_info = dict(env_info) if isinstance(env_info, dict) else {}
 
         reward = [reward_value]
 
@@ -543,5 +555,21 @@ class Preprocessor:
         dist_norm = _norm(float(dist), MAP_SIZE * 1.41)
         return [dx_norm, dz_norm, dist_norm]
 
+    def _direction_id_to_vec(self, direction_id):
+        mapping = {
+            1: (1.0, 0.0),  # 东
+            2: (0.7071, 0.7071),  # 东北
+            3: (0.0, 1.0),  # 北
+            4: (-0.7071, 0.7071),  # 西北
+            5: (-1.0, 0.0),  # 西
+            6: (-0.7071, -0.7071),  # 西南
+            7: (0.0, -1.0),  # 南
+            8: (0.7071, -0.7071),  # 东南
+        }
+        return mapping.get(direction_id, (0.0, 0.0))
+
     def get_last_reward_components(self):
         return dict(self.last_reward_components)
+
+    def get_last_env_info(self):
+        return dict(self.last_env_info)

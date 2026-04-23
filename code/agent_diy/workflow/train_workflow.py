@@ -12,6 +12,7 @@ Training workflow for Gorge Chase SAC.
 
 import os
 import time
+import json
 
 import numpy as np
 from agent_diy.feature.definition import SampleData, sample_process
@@ -143,6 +144,45 @@ class EpisodeRunner:
                 reward = np.array(next_remain_info.get("reward", [0.0]), dtype=np.float32)
                 total_reward += float(reward[0])
                 reward_components = next_remain_info.get("reward_components", {})
+                env_info_snapshot = next_remain_info.get("env_info", {})
+                if self.logger and (step == 1 or step % 50 == 0):
+                    expected_env_keys = [
+                        "max_step",
+                        "step_no",
+                        "step_score",
+                        "total_score",
+                        "treasure_id",
+                        "treasure_score",
+                        "collected_buff",
+                        "monster_speed_boost_step",
+                    ]
+                    missing_env_keys = [k for k in expected_env_keys if k not in env_info_snapshot]
+                    obs_payload = env_obs.get("observation", {})
+                    frame_state = obs_payload.get("frame_state", {})
+                    heroes_state = frame_state.get("heroes", {})
+                    monsters_state = frame_state.get("monsters", [])
+                    treasures_state = frame_state.get("treasures", frame_state.get("treasure", []))
+                    legal_action_state = obs_payload.get("legal_action", [])
+                    map_info_state = obs_payload.get("map_info", [])
+                    schema_snapshot = {
+                        "hero_pos": heroes_state.get("pos", {}),
+                        "monster_num": len(monsters_state) if isinstance(monsters_state, list) else 0,
+                        "treasure_num": len(treasures_state) if isinstance(treasures_state, list) else 0,
+                        "legal_action_len": len(legal_action_state) if isinstance(legal_action_state, list) else -1,
+                        "map_rows": len(map_info_state) if isinstance(map_info_state, list) else -1,
+                        "map_cols": (
+                            len(map_info_state[0])
+                            if isinstance(map_info_state, list) and map_info_state and isinstance(map_info_state[0], list)
+                            else -1
+                        ),
+                        "missing_env_keys": missing_env_keys,
+                    }
+                    self.logger.info(
+                        f"[ENV_INFO] episode:{self.episode_cnt} step:{step} env_info:{json.dumps(env_info_snapshot, ensure_ascii=False)}"
+                    )
+                    self.logger.info(
+                        f"[ENV_SCHEMA] episode:{self.episode_cnt} step:{step} snapshot:{json.dumps(schema_snapshot, ensure_ascii=False)}"
+                    )
                 for k, v in reward_components.items():
                     reward_component_sums[k] = reward_component_sums.get(k, 0.0) + float(v)
 
