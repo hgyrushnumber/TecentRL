@@ -48,16 +48,16 @@ class Config:
     ALPHA = 0.2
     AUTO_ALPHA = True
     TARGET_ENTROPY = 2.0
-    ALPHA_LR = 5e-4
+    ALPHA_LR = 1e-4
     ALPHA_MIN = 1e-3
     ALPHA_MAX = 10.0
     Q_MIX_COEF = 0.1
 
     # Optimizer
-    INIT_LEARNING_RATE_START = 2e-4
+    INIT_LEARNING_RATE_START = 5e-5
     GRAD_CLIP_RANGE = 5.0
     ACTOR_UPDATE_INTERVAL = 2
-    TARGET_Q_CLIP = 8.0
+    TARGET_Q_CLIP = 12.0
     CRITIC_USE_HUBER = True
 
     # Reward knobs (can be tuned directly in conf)
