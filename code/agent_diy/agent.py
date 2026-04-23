@@ -58,6 +58,7 @@ class Agent(BaseAgent):
         remain_info = {
             "reward": reward,
             "reward_components": self.preprocessor.get_last_reward_components(),
+            "env_info": self.preprocessor.get_last_env_info(),
         }
         return obs_data, remain_info
 

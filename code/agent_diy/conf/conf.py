@@ -14,10 +14,10 @@ Configuration for Gorge Chase SAC-compatible training.
 class Config:
     # Spatial encoder settings / 空间编码设置
     LOCAL_MAP_WINDOW = 21
-    MAP_CHANNELS = 4  # hero, monster, treasure, obstacle
+    MAP_CHANNELS = 1  # obstacle only
     MAP_FEATURE_DIM = LOCAL_MAP_WINDOW * LOCAL_MAP_WINDOW * MAP_CHANNELS
 
-    # Feature dimensions / 特征维度（共1805维）
+    # Feature dimensions / 特征维度（共482维）
     FEATURES = [
         4,
         5,
@@ -66,13 +66,13 @@ class Config:
     REWARD_DIST_SHAPING = 0.08
     REWARD_PROGRESSIVE_STEP = 0.02
     REWARD_STAGE_PROGRESS = 0.04
+    MILESTONE_STEP = 20
     REWARD_TREASURE_SCORE = 0.6
     REWARD_TREASURE_APPROACH = 0.12
     PENALTY_TREASURE_AWAY = 0.03
     TREASURE_SAFE_DISTANCE_TH = 0.35
     REWARD_TREASURE_SAFE_BONUS_CAP = 0.04
     REWARD_TREASURE_SAFE_BONUS_COEF = 0.16
-    ENABLE_TREASURE_REWARD = False
 
     REWARD_BUFF = 0.2
     PENALTY_DANGER = 0.08
