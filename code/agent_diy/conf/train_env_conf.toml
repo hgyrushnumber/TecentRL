@@ -1,7 +1,7 @@
 [env_conf]
 # Stage-1 easy curriculum maps (focus on score collection first).
 # 第一阶段低难度课题地图（先学拿分）。
-map = [1, 2, 3]
+map = [1, 2, 3, 4, 5, 6, 7]
 
 # Whether to randomly select maps.
 # 是否随机抽取地图。
@@ -17,19 +17,19 @@ buff_count = 2
 
 # Speed buff respawn cooldown in steps after being picked up. Lower is easier.
 # 加速buff刷新时间。越小越容易。
-buff_cooldown = 120
+buff_cooldown = 200
 
 # Talent skill cooldown in steps. Lower is easier.
 # 技能冷却步数。越小越容易。
-talent_cooldown = 80
+talent_cooldown = 100
 
 # Steps before the second monster appears. Higher is easier.
 # 第二个怪物出现间隔。越大越容易。
-monster_interval = 700
+monster_interval = 300
 
 # Steps before monster speed increases by one grid. Higher is easier.
 # 怪物加速增益时间。越大越容易。
-monster_speedup = 1200
+monster_speedup = 500
 
 # Maximum steps per episode. The episode ends when this limit is reached. Range: 1~2000.
 # 最大步数。单局任务预测步数达到最大步数时，任务结束。可配置范围为1～2000。
