@@ -26,16 +26,9 @@ SampleData = create_cls(
     obs=Config.DIM_OF_OBSERVATION,
     legal_action=Config.ACTION_NUM,
     act=1,
-    reward=Config.VALUE_NUM,
+    reward=1,
     done=1,
     next_obs=Config.DIM_OF_OBSERVATION,
     next_legal_action=Config.ACTION_NUM,
 )
 
-
-def sample_process(list_sample_data):
-    """
-    SAC 下这里不再做 GAE，也不再补 PPO 字段。
-    直接原样返回。
-    """
-    return list_sample_data

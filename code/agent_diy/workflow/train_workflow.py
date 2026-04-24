@@ -15,7 +15,7 @@ import time
 import json
 
 import numpy as np
-from agent_diy.feature.definition import SampleData, sample_process
+from agent_diy.feature.definition import SampleData
 from tools.metrics_utils import get_training_metrics
 from tools.train_env_conf_validate import read_usr_conf
 from common_python.utils.workflow_disaster_recovery import handle_disaster_recovery
@@ -65,7 +65,7 @@ class EpisodeRunner:
         self.last_get_training_metrics_time = 0
 
     def run_episodes(self):
-        """Run a single episode and yield collected samples."""
+        """Run episodes and yield collected samples."""
         while True:
             now = time.time()
             if now - self.last_get_training_metrics_time >= 60:
@@ -74,14 +74,17 @@ class EpisodeRunner:
                 if training_metrics is not None:
                     self.logger.info(f"training_metrics is {training_metrics}")
 
-            env_obs = self.env.reset(self.usr_conf)
+            env_reset_result = self.env.reset(usr_conf=self.usr_conf)
+            self.logger.info(f"env.reset() returned type: {type(env_reset_result)}")
+            env_obs = env_reset_result
 
             if handle_disaster_recovery(env_obs, self.logger):
                 continue
 
             self.agent.reset(env_obs)
+            self.agent.load_model(id="latest")
 
-            obs_data, remain_info = self.agent.observation_process(env_obs)
+            obs_data, _ = self.agent.observation_process(env_obs)
             if obs_data is None:
                 self.logger.error("observation_process returned None on reset")
                 continue
@@ -94,6 +97,8 @@ class EpisodeRunner:
             reward_component_sums = {}
 
             self.logger.info(f"Episode {self.episode_cnt} start")
+
+            obs = env_obs
 
             while not done:
                 try:
@@ -113,26 +118,33 @@ class EpisodeRunner:
                     break
 
                 try:
-                    env_reward, env_obs = self.env.step(act)
+                    _env_reward, _obs = self.env.step(act)
                 except Exception as e:
                     self.logger.error(f"env.step() Exception {e}")
                     break
 
-                if handle_disaster_recovery(env_obs, self.logger):
-                    break
-
-                try:
-                    terminated = bool(env_obs["terminated"])
-                    truncated = bool(env_obs["truncated"])
-                except Exception as e:
-                    self.logger.error(f"env_obs parse Exception {e}, env_obs={env_obs}")
+                if handle_disaster_recovery(_obs, self.logger):
                     break
 
                 step += 1
+                terminated = _obs["terminated"]
+                truncated = _obs["truncated"]
                 done = terminated or truncated
 
                 try:
-                    next_obs_data, next_remain_info = self.agent.observation_process(env_obs)
+                    reward, reward_components = self.agent.preprocessor.compute_reward_from_transition(
+                        prev_obs=obs,
+                        curr_obs=_obs,
+                        action=act,
+                    )
+                except Exception as e:
+                    self.logger.error(f"compute_reward_from_transition Exception {e}")
+                    break
+
+                reward = np.array([reward], dtype=np.float32)
+
+                try:
+                    next_obs_data, next_remain_info = self.agent.observation_process(_obs)
                 except Exception as e:
                     self.logger.error(f"observation_process(next) Exception {e}")
                     break
@@ -141,19 +153,21 @@ class EpisodeRunner:
                     self.logger.error("next observation_process returned None")
                     break
 
-                reward = np.array(next_remain_info.get("reward", [0.0]), dtype=np.float32)
                 total_reward += float(reward[0])
-                reward_components = next_remain_info.get("reward_components", {})
+
                 env_info_snapshot = next_remain_info.get("env_info", {})
                 if self.logger and (step == 1 or step % 50 == 0):
                     self.logger.info(
-                        f"[ENV_INFO] episode:{self.episode_cnt} step:{step} env_info:{json.dumps(env_info_snapshot, ensure_ascii=False)}"
+                        f"[ENV_INFO] episode:{self.episode_cnt} "
+                        f"step:{step} "
+                        f"env_info:{json.dumps(env_info_snapshot, ensure_ascii=False)}"
                     )
+
                 for k, v in reward_components.items():
                     reward_component_sums[k] = reward_component_sums.get(k, 0.0) + float(v)
 
                 if done:
-                    env_info = env_obs.get("observation", {}).get("env_info", {})
+                    env_info = _obs.get("observation", {}).get("env_info", {})
                     total_score = env_info.get("total_score", 0)
 
                     if terminated:
@@ -164,8 +178,10 @@ class EpisodeRunner:
                         result_str = "ABNORMAL"
 
                     self.logger.info(
-                        f"[GAMEOVER] episode:{self.episode_cnt} steps:{step} "
-                        f"result:{result_str} sim_score:{total_score:.1f} "
+                        f"[GAMEOVER] episode:{self.episode_cnt} "
+                        f"steps:{step} "
+                        f"result:{result_str} "
+                        f"sim_score:{total_score:.1f} "
                         f"total_reward:{total_reward:.3f}"
                     )
 
@@ -184,25 +200,32 @@ class EpisodeRunner:
                     now = time.time()
                     if now - self.last_report_monitor_time >= 60 and self.monitor:
                         monitor_data = {
-                            "reward": round(total_reward, 4),
+                            "episode_reward": round(total_reward, 4),
                             "episode_steps": step,
                             "episode_cnt": self.episode_cnt,
-                            "comp_survive": round(reward_component_sums.get("survive_reward", 0.0), 4),
-                            "comp_treasure_score": round(reward_component_sums.get("treasure_score_reward", 0.0), 4),
+                            "comp_treasure_score": round(
+                                reward_component_sums.get("treasure_score_reward", 0.0), 4
+                            ),
                             "comp_treasure_approach": round(
                                 reward_component_sums.get("treasure_approach_reward", 0.0), 4
                             ),
-                            "comp_danger_penalty": round(reward_component_sums.get("danger_penalty", 0.0), 4),
-                            "comp_dist_shaping": round(reward_component_sums.get("dist_shaping", 0.0), 4),
-                            "comp_repeat_penalty": round(reward_component_sums.get("repeat_explore_penalty", 0.0), 4),
+                            "comp_danger_penalty": round(
+                                reward_component_sums.get("danger_penalty", 0.0), 4
+                            ),
+                            "comp_dist_shaping": round(
+                                reward_component_sums.get("dist_shaping", 0.0), 4
+                            ),
+                            "comp_repeat_penalty": round(
+                                reward_component_sums.get("repeat_penalty", 0.0), 4
+                            ),
                         }
+
                         self.monitor.put_data({os.getpid(): monitor_data})
                         self.last_report_monitor_time = now
 
                     if collector:
-                        collector = sample_process(collector)
                         yield collector
                     break
 
+                obs = _obs
                 obs_data = next_obs_data
-                remain_info = next_remain_info

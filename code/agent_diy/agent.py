@@ -32,13 +32,7 @@ class Agent(BaseAgent):
 
         self.device = device
         self.model = Model(device).to(self.device)
-        self.optimizer = torch.optim.Adam(
-            params=self.model.parameters(),
-            lr=Config.INIT_LEARNING_RATE_START,
-            betas=(0.9, 0.999),
-            eps=1e-8,
-        )
-        self.algorithm = Algorithm(self.model, self.optimizer, self.device, logger, monitor)
+        self.algorithm = Algorithm(self.model, None, self.device, logger, monitor)
         self.preprocessor = Preprocessor()
         self.last_action = -1
         self.logger = logger
@@ -50,16 +44,18 @@ class Agent(BaseAgent):
         self.last_action = -1
 
     def observation_process(self, env_obs):
-        feature, legal_action, reward = self.preprocessor.feature_process(env_obs, self.last_action)
+        feature, legal_action = self.preprocessor.feature_process(env_obs, self.last_action)
+
         obs_data = ObsData(
             feature=list(feature),
             legal_action=legal_action,
         )
+
         remain_info = {
-            "reward": reward,
-            "reward_components": self.preprocessor.get_last_reward_components(),
-            "env_info": self.preprocessor.get_last_env_info(),
+            "env_info": env_obs.get("observation", {}).get("env_info", {}),
+            "raw_obs": env_obs,
         }
+
         return obs_data, remain_info
 
     def predict(self, list_obs_data):
@@ -67,15 +63,12 @@ class Agent(BaseAgent):
         legal_action = list_obs_data[0].legal_action
 
         probs, q1, q2 = self._run_model(feature, legal_action)
+
         legal_mask = np.array(legal_action, dtype=np.float32)
         min_q = np.minimum(q1, q2)
-        q_probs = self._legal_soft_max(min_q, legal_mask)
-        mix_coef = float(getattr(Config, "Q_MIX_COEF", 0.1))
-        mixed_probs = (1.0 - mix_coef) * probs + mix_coef * q_probs
-        mixed_probs = mixed_probs / (np.sum(mixed_probs) + 1e-8)
         masked_q = np.where(legal_mask > 0, min_q, -1e9)
 
-        action = int(np.random.choice(len(mixed_probs), p=mixed_probs))
+        action = int(np.random.choice(len(probs), p=probs))
         d_action = int(np.argmax(masked_q))
 
         return [
@@ -118,33 +111,8 @@ class Agent(BaseAgent):
 
         with torch.no_grad():
             logits, q1, q2 = self.model(obs_tensor, inference=True)
-            probs = self._masked_softmax_torch(logits, legal_tensor)[0].cpu().numpy()
+            probs = self.algorithm._masked_softmax(logits, legal_tensor)[0].cpu().numpy()
             q1 = q1[0].cpu().numpy()
             q2 = q2[0].cpu().numpy()
 
         return probs, q1, q2
-
-    def _masked_softmax_torch(self, logits, legal_action):
-        masked_logits = logits.masked_fill(legal_action <= 0, -1e9)
-        probs = torch.softmax(masked_logits, dim=1)
-        invalid_mask = legal_action.sum(dim=1, keepdim=True) <= 0
-        if invalid_mask.any():
-            probs[invalid_mask.squeeze(1)] = 1.0 / probs.size(1)
-        return probs
-
-    def _legal_soft_max(self, input_hidden, legal_action):
-        if np.sum(legal_action) <= 0:
-            return np.ones_like(input_hidden, dtype=np.float32) / len(input_hidden)
-
-        _w, _e = 1e20, 1e-8
-        tmp = input_hidden - _w * (1.0 - legal_action)
-        tmp_max = np.max(tmp, keepdims=True)
-        tmp = np.clip(tmp - tmp_max, -_w, 50)
-        tmp = (np.exp(tmp) + _e) * legal_action
-        prob = tmp / (np.sum(tmp, keepdims=True) + 1e-8)
-        return prob.astype(np.float32)
-
-    def _legal_sample(self, probs, use_max=False):
-        if use_max:
-            return int(np.argmax(probs))
-        return int(np.random.choice(len(probs), p=probs))

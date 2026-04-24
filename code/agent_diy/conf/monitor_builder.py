@@ -10,14 +10,12 @@ Monitor panel configuration builder for Gorge Chase.
 峡谷追猎监控面板配置构建器。
 """
 
-
 from kaiwudrl.common.monitor.monitor_config_builder import MonitorConfigBuilder
 
 
 def build_monitor():
     """
-    # This function is used to create monitoring panel configurations for custom indicators.
-    # 该函数用于创建自定义指标的监控面板配置。
+    Create monitoring panel configurations for custom indicators.
     """
     monitor = MonitorConfigBuilder()
 
@@ -27,8 +25,12 @@ def build_monitor():
             group_name="算法指标",
             group_name_en="algorithm",
         )
+
+        # ------------------------------------------------------------------
+        # Reward
+        # ------------------------------------------------------------------
         .add_panel(
-            name="累积回报",
+            name="奖励",
             name_en="reward",
             type="line",
         )
@@ -37,16 +39,10 @@ def build_monitor():
             expr="avg(reward{})",
         )
         .end_panel()
-        .add_panel(
-            name="总损失",
-            name_en="total_loss",
-            type="line",
-        )
-        .add_metric(
-            metrics_name="total_loss",
-            expr="avg(total_loss{})",
-        )
-        .end_panel()
+
+        # ------------------------------------------------------------------
+        # Loss
+        # ------------------------------------------------------------------
         .add_panel(
             name="价值损失",
             name_en="value_loss",
@@ -67,6 +63,10 @@ def build_monitor():
             expr="avg(policy_loss{})",
         )
         .end_panel()
+
+        # ------------------------------------------------------------------
+        # Entropy / Alpha
+        # ------------------------------------------------------------------
         .add_panel(
             name="策略熵",
             name_en="entropy",
@@ -88,6 +88,20 @@ def build_monitor():
         )
         .end_panel()
         .add_panel(
+            name="温度系数",
+            name_en="alpha",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="alpha",
+            expr="avg(alpha{})",
+        )
+        .end_panel()
+
+        # ------------------------------------------------------------------
+        # Q diagnostics
+        # ------------------------------------------------------------------
+        .add_panel(
             name="Q目标均值",
             name_en="q_target_mean",
             type="line",
@@ -107,56 +121,10 @@ def build_monitor():
             expr="avg(q_gap{})",
         )
         .end_panel()
-        .add_panel(
-            name="梯度范数",
-            name_en="grad_norm",
-            type="line",
-        )
-        .add_metric(
-            metrics_name="grad_norm",
-            expr="avg(grad_norm{})",
-        )
-        .end_panel()
-        .add_panel(
-            name="梯度范数(裁剪后)",
-            name_en="grad_norm_post",
-            type="line",
-        )
-        .add_metric(
-            metrics_name="grad_norm_post",
-            expr="avg(grad_norm_post{})",
-        )
-        .end_panel()
-        .add_panel(
-            name="温度系数",
-            name_en="alpha",
-            type="line",
-        )
-        .add_metric(
-            metrics_name="alpha",
-            expr="avg(alpha{})",
-        )
-        .end_panel()
-        .add_panel(
-            name="温度损失",
-            name_en="alpha_loss",
-            type="line",
-        )
-        .add_metric(
-            metrics_name="alpha_loss",
-            expr="avg(alpha_loss{})",
-        )
-        .end_panel()
-        .add_panel(
-            name="合法动作数",
-            name_en="legal_action_count",
-            type="line",
-        )
-        .add_metric(
-            metrics_name="legal_action_count",
-            expr="avg(legal_action_count{})",
-        )
-        .end_panel()
+
+        # ------------------------------------------------------------------
+        # Gradient diagnostics
+        # ------------------------------------------------------------------
         .add_panel(
             name="Critic梯度范数",
             name_en="critic_grad_norm",
@@ -168,7 +136,7 @@ def build_monitor():
         )
         .end_panel()
         .add_panel(
-            name="Critic梯度范数(裁剪后)",
+            name="Critic梯度范数裁剪后",
             name_en="critic_grad_norm_post",
             type="line",
         )
@@ -188,7 +156,7 @@ def build_monitor():
         )
         .end_panel()
         .add_panel(
-            name="Actor梯度范数(裁剪后)",
+            name="Actor梯度范数裁剪后",
             name_en="actor_grad_norm_post",
             type="line",
         )
@@ -197,6 +165,10 @@ def build_monitor():
             expr="avg(actor_grad_norm_post{})",
         )
         .end_panel()
+
+        # ------------------------------------------------------------------
+        # Reward components
+        # ------------------------------------------------------------------
         .add_panel(
             name="危险惩罚分项",
             name_en="comp_danger_penalty",
@@ -237,7 +209,9 @@ def build_monitor():
             expr="avg(comp_dist_shaping{})",
         )
         .end_panel()
+
         .end_group()
         .build()
     )
+
     return config_dict
