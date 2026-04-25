@@ -13,35 +13,75 @@ Configuration for Gorge Chase SAC-compatible training.
 
 class Config:
     # ----------------------------------------------------------------------
-    # Spatial encoder settings / 空间编码设置
+    # Local map encoder / 局部地图编码
     # ----------------------------------------------------------------------
     LOCAL_MAP_WINDOW = 21
 
-    # CNN 局部地图通道：
-    # channel 0: obstacle 障碍物
-    # channel 1: treasure 宝箱
-    # channel 2: monster 怪兽
-    # channel 3: buff 增益道具
-    MAP_CHANNELS = 4  # obstacle only
+    # 局部 CNN 只处理障碍物：
+    # map_info: 0 = obstacle, 1 = walkable
+    # 不再把 treasure / monster / buff 投影到局部 CNN，避免和全局实体图冗余。
+    MAP_CHANNELS = 1
     MAP_FEATURE_DIM = LOCAL_MAP_WINDOW * LOCAL_MAP_WINDOW * MAP_CHANNELS
 
-    # 这里的 0/2/3/4 只是推荐占位，如果环境编码不同，必须同步修改。
     MAP_VALUE_OBSTACLE = 0
-    MAP_VALUE_TREASURE = 2
-    MAP_VALUE_MONSTER = 3
-    MAP_VALUE_BUFF = 4
+    MAP_VALUE_WALKABLE = 1
+
     # ----------------------------------------------------------------------
-    # Feature dimensions / 特征维度（共482维）
+    # Global entity map encoder / 全局实体热力图
     # ----------------------------------------------------------------------
+    # 全局 CNN 处理 hero / treasure / monster / buff 的全局位置关系。
+    # 使用 128x128 是因为环境坐标本身就是 128 尺度。
+    GLOBAL_MAP_SIZE = 128
+    GLOBAL_MAP_CHANNELS = 4
+    GLOBAL_MAP_FEATURE_DIM = GLOBAL_MAP_SIZE * GLOBAL_MAP_SIZE * GLOBAL_MAP_CHANNELS
+
+    # global_entity_map channels:
+    # channel 0: hero
+    # channel 1: treasure
+    # channel 2: monster
+    # channel 3: buff
+    GLOBAL_CHANNEL_HERO = 0
+    GLOBAL_CHANNEL_TREASURE = 1
+    GLOBAL_CHANNEL_MONSTER = 2
+    GLOBAL_CHANNEL_BUFF = 3
+
+    # Gaussian heatmap sigma / 高斯扩散参数
+    HERO_SIGMA = 1.5
+    TREASURE_SIGMA = 2.0
+    BUFF_SIGMA = 2.0
+    MONSTER_SIGMA = 3.0
+    MONSTER_SIGMA_SPEED_COEF = 1.0
+
+    # ----------------------------------------------------------------------
+    # Object types / 物件类型
+    # ----------------------------------------------------------------------
+    ORGAN_TYPE_TREASURE = 1
+    ORGAN_TYPE_BUFF = 2
+
+    # 是否允许使用 extra_info
+    USE_EXTRA_INFO_FEATURE = True
+    USE_EXTRA_INFO_REWARD = True
+
+    # ----------------------------------------------------------------------
+    # Feature dimensions / 特征维度
+    # ----------------------------------------------------------------------
+    # hero self: 4
+    # monster features: 2 * 6 = 12
+    # local obstacle map: 21 * 21 * 1 = 441
+    # global entity map: 128 * 128 * 4 = 65536
+    # legal action mask: 16
+    # progress/status: 6
+    # nearest treasure direction: 3
+    # nearest buff direction: 3
     FEATURES = [
-        4,               # hero self feature
-        5,               # monster 1 feature
-        5,               # monster 2 feature
-        6,               # out-of-vision monster relative info: 2 monsters x [dx, dz, dist]
-        MAP_FEATURE_DIM, # local obstacle map
-        16,              # legal action mask
-        2,               # progress feature
-        3,               # nearest treasure direction + distance: [dx, dz, dist_norm]
+        4,                       # hero self: x, z, flash_cd, buff_remaining
+        12,                      # monster features: 2 monsters * 6
+        MAP_FEATURE_DIM,         # local obstacle map
+        GLOBAL_MAP_FEATURE_DIM,  # global entity heatmap
+        16,                      # legal action mask
+        6,                       # progress / treasure / buff status
+        3,                       # nearest treasure direction + distance
+        3,                       # nearest buff direction + distance
     ]
 
     FEATURE_SPLIT_SHAPE = FEATURES
@@ -49,9 +89,15 @@ class Config:
     DIM_OF_OBSERVATION = FEATURE_LEN
 
     # ----------------------------------------------------------------------
-    # Action space / 动作空间：16个动作（8移动 + 8闪现）
+    # Action space / 动作空间
     # ----------------------------------------------------------------------
     ACTION_NUM = 16
+
+    # 约定：
+    # 0~7  普通移动
+    # 8~15 闪现动作
+    # 如果环境动作编号不是这样，这里必须同步修改。
+    FLASH_ACTION_START = 8
 
     # ----------------------------------------------------------------------
     # Network / 网络结构
@@ -59,24 +105,17 @@ class Config:
     HIDDEN_DIM = 256
     MID_DIM = 128
 
+    ACTOR_HEAD_INIT_GAIN = 0.01
+    CRITIC_HEAD_INIT_GAIN = 1.0
+
     # ----------------------------------------------------------------------
     # SAC hyperparameters / SAC核心参数
     # ----------------------------------------------------------------------
-    # 0.99 在当前 reward 尺度下容易让 Q target 涨到 100+
-    # 0.98 可以降低长期回报尺度，让 Critic 更稳定
     GAMMA = 0.98
-
-    # target network soft update
-    # 0.01 偏快，target 追在线网络太紧；0.005 更稳
     TAU = 0.005
 
-    # entropy temperature
     ALPHA = 0.2
     AUTO_ALPHA = True
-
-    # 当前合法动作数约 8.5，最大熵 log(8.5)≈2.14
-    # 之前 entropy 接近 2.1，说明策略太随机
-    # 目标熵先设 1.0，让策略逐渐从随机转向有偏好
     TARGET_ENTROPY = 1.0
 
     ALPHA_LR = 1e-5
@@ -87,32 +126,69 @@ class Config:
     # Optimizer / 优化器参数
     # ----------------------------------------------------------------------
     INIT_LEARNING_RATE_START = 1e-4
-
-    # 推荐在新版 algorithm.py 中分别读取 ACTOR_LR / CRITIC_LR
-    # Actor 当前梯度偏小，保留 1e-4
     ACTOR_LR = 1e-4
-
-    # Critic 梯度仍偏大，降低到 5e-5
     CRITIC_LR = 5e-5
 
-    # 当前 critic_grad_norm_post 长期贴 5，说明 5 太宽且长期触发
-    # 改成 2，并配合降低 critic lr
     GRAD_CLIP_RANGE = 2.0
-
-    # Actor 当前策略过随机，Actor 梯度偏小，可以每步更新
     ACTOR_UPDATE_INTERVAL = 1
 
-    # target Q clipping
-    # reward 缩放后通常不需要强制裁剪 target Q
     USE_TARGET_Q_CLIP = False
     TARGET_Q_CLIP = 30.0
-
-    # Critic loss
     CRITIC_USE_HUBER = True
 
     # ----------------------------------------------------------------------
     # Reward scale / 奖励缩放
     # ----------------------------------------------------------------------
-    # 主方案：等比缩小 reward
     REWARD_SCALE = 0.005
 
+    # 生存奖励：先提升步数
+    REWARD_SURVIVAL = 0.9
+
+    # 移动奖励：防止看不到怪兽时原地不动
+    REWARD_MOVE = 0.3
+
+    # 怪兽距离塑形
+    REWARD_MONSTER_DISTANCE = 35.0
+    PENALTY_DANGER = 30.0
+    DANGER_DISTANCE_TH = 0.32
+    MONSTER_SPEED_DANGER_COEF = 1.0
+
+    # 宝箱奖励：当前阶段先保守，避免为了宝箱过早死亡
+    REWARD_TREASURE_SCORE = 35.0
+    REWARD_TREASURE_APPROACH = 12.0
+    PENALTY_TREASURE_AWAY = 4.0
+    PENALTY_TREASURE_GREED_DANGER = 8.0
+    TREASURE_SAFE_DISTANCE_TH = 0.38
+
+    # Buff 奖励
+    REWARD_BUFF_COLLECT = 20.0
+    REWARD_BUFF_APPROACH = 10.0
+    PENALTY_BUFF_AWAY = 2.0
+    PENALTY_BUFF_GREED_DANGER = 2.0
+    BUFF_SAFE_DISTANCE_TH = 0.35
+
+    # 闪现奖励 / 惩罚
+    REWARD_FLASH_ESCAPE = 45.0
+    PENALTY_FLASH_TOWARD_MONSTER = 45.0
+    PENALTY_FLASH_WASTE = 8.0
+
+    FLASH_DANGER_DIST_TH = 0.35
+    FLASH_ESCAPE_PROGRESS_TH = 0.03
+
+    # 行为惩罚
+    PENALTY_INVALID_MOVE = 5.0
+    PENALTY_REPEAT_VISIT = 1.5
+
+    # 终局奖励 / 惩罚
+    TERMINAL_CAUGHT_PENALTY = -150.0
+    TERMINAL_SUCCESS_REWARD = 100.0
+    TERMINAL_TIMEOUT_PENALTY = -5.0
+
+    # ----------------------------------------------------------------------
+    # Normalization constants / 归一化常量
+    # ----------------------------------------------------------------------
+    MAP_SIZE = 128.0
+    MAX_MONSTER_SPEED = 5.0
+    MAX_DIST_BUCKET = 5.0
+    MAX_FLASH_CD = 100.0
+    MAX_BUFF_DURATION = 50.0

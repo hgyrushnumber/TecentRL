@@ -58,29 +58,27 @@ class Agent(BaseAgent):
 
         return obs_data, remain_info
 
-    def predict(self, list_obs_data):
+    def predict(self, list_obs_data, deterministic=False):
         feature = list_obs_data[0].feature
         legal_action = list_obs_data[0].legal_action
 
-        probs, q1, q2 = self._run_model(feature, legal_action)
+        probs = self._run_model(feature, legal_action)
 
-        legal_mask = np.array(legal_action, dtype=np.float32)
-        min_q = np.minimum(q1, q2)
-        masked_q = np.where(legal_mask > 0, min_q, -1e9)
-
-        action = int(np.random.choice(len(probs), p=probs))
-        d_action = int(np.argmax(masked_q))
+        if deterministic:
+            action = int(np.argmax(probs))
+        else:
+            action = int(np.random.choice(len(probs), p=probs))
 
         return [
             ActData(
                 action=[action],
-                d_action=[d_action],
+                d_action=[int(np.argmax(probs))],
             )
         ]
 
     def exploit(self, env_obs):
         obs_data, _ = self.observation_process(env_obs)
-        act_data = self.predict([obs_data])
+        act_data = self.predict([obs_data], deterministic=True)
         return self.action_process(act_data[0], is_stochastic=False)
 
     def learn(self, list_sample_data):
@@ -96,6 +94,10 @@ class Agent(BaseAgent):
     def load_model(self, path=None, id="1"):
         model_file_path = f"{path}/model.ckpt-{str(id)}.pkl"
         self.model.load_state_dict(torch.load(model_file_path, map_location=self.device))
+        
+        if hasattr(self, "algorithm") and hasattr(self.algorithm, "sync_target_model"):
+            self.algorithm.sync_target_model()
+        
         if self.logger:
             self.logger.info(f"load model {model_file_path} successfully")
 
@@ -110,9 +112,7 @@ class Agent(BaseAgent):
         legal_tensor = torch.tensor(np.array([legal_action]), dtype=torch.float32).to(self.device)
 
         with torch.no_grad():
-            logits, q1, q2 = self.model(obs_tensor, inference=True)
+            logits = self.model.actor(obs_tensor)
             probs = self.algorithm._masked_softmax(logits, legal_tensor)[0].cpu().numpy()
-            q1 = q1[0].cpu().numpy()
-            q2 = q2[0].cpu().numpy()
 
-        return probs, q1, q2
+        return probs

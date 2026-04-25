@@ -606,3 +606,8 @@ class Algorithm:
             self.monitor.put_data({os.getpid(): results})
 
         self.last_report_monitor_time = now
+    def sync_target_model(self):
+        self.target_model.load_state_dict(self.model.state_dict())
+        self.target_model.eval()
+        for p in self.target_model.parameters():
+            p.requires_grad = False

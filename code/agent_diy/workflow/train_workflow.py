@@ -95,7 +95,10 @@ class EpisodeRunner:
             step = 0
             total_reward = 0.0
             reward_component_sums = {}
-
+            reward_debug_latest = {}
+            reward_debug_max = {}
+            reward_debug_abs_sum = {}
+           
             self.logger.info(f"Episode {self.episode_cnt} start")
 
             obs = env_obs
@@ -166,14 +169,59 @@ class EpisodeRunner:
                 for k, v in reward_components.items():
                     reward_component_sums[k] = reward_component_sums.get(k, 0.0) + float(v)
 
+                debug_keys_latest = [
+                    "debug_prev_monster_dist",
+                    "debug_curr_monster_dist",
+                    "debug_monster_progress",
+                    "debug_prev_treasure_dist",
+                    "debug_curr_treasure_dist",
+                    "debug_treasure_progress",
+                    "debug_prev_buff_dist",
+                    "debug_curr_buff_dist",
+                    "debug_buff_progress",
+                    "monster_speed_factor",
+                ]
+
+                debug_keys_max = [
+                    "debug_curr_has_monster",
+                    "debug_curr_has_treasure",
+                    "debug_curr_has_buff",
+                    "debug_is_flash_action",
+                    "debug_in_flash_danger",
+                ]
+                debug_keys_abs_sum = [
+                    "debug_monster_progress",
+                    "debug_treasure_progress",
+                    "debug_buff_progress",
+                ]
+
+
+                for k in debug_keys_latest:
+                    if k in reward_components:
+                        reward_debug_latest[k] = float(reward_components[k])
+
+                for k in debug_keys_max:
+                    if k in reward_components:
+                        reward_debug_max[k] = max(
+                            reward_debug_max.get(k, 0.0),
+                            float(reward_components[k]),
+                        )
+                for k in debug_keys_abs_sum:
+                    if k in reward_components:
+                        reward_debug_abs_sum[k] = reward_debug_abs_sum.get(k, 0.0) + abs(
+                            float(reward_components[k])
+                        )
                 if done:
                     env_info = _obs.get("observation", {}).get("env_info", {})
                     total_score = env_info.get("total_score", 0)
 
-                    if terminated:
-                        result_str = "DEAD"
-                    elif truncated:
+                    max_step = int(env_info.get("max_step", 1000))
+                    if truncated:
+                        result_str = "TRUNCATED"
+                    elif step >= max_step - 1:
                         result_str = "TIMEOUT_DONE"
+                    elif terminated:
+                        result_str = "TERMINATED_EARLY"
                     else:
                         result_str = "ABNORMAL"
 
@@ -203,6 +251,8 @@ class EpisodeRunner:
                             "episode_reward": round(total_reward, 4),
                             "episode_steps": step,
                             "episode_cnt": self.episode_cnt,
+
+                            # reward components
                             "comp_treasure_score": round(
                                 reward_component_sums.get("treasure_score_reward", 0.0), 4
                             ),
@@ -217,6 +267,70 @@ class EpisodeRunner:
                             ),
                             "comp_repeat_penalty": round(
                                 reward_component_sums.get("repeat_penalty", 0.0), 4
+                            ),
+                            "comp_buff_reward": round(
+                                reward_component_sums.get("buff_reward", 0.0), 4
+                            ),
+                            "comp_buff_collect": round(
+                                reward_component_sums.get("buff_collect_reward", 0.0), 4
+                            ),
+                            "comp_buff_approach": round(
+                                reward_component_sums.get("buff_approach_reward", 0.0), 4
+                            ),
+
+                            # local map debug: whether objects appeared in this episode
+                            "debug_has_monster_max": round(
+                                reward_debug_max.get("debug_curr_has_monster", 0.0), 4
+                            ),
+                            "debug_has_treasure_max": round(
+                                reward_debug_max.get("debug_curr_has_treasure", 0.0), 4
+                            ),
+                            "debug_has_buff_max": round(
+                                reward_debug_max.get("debug_curr_has_buff", 0.0), 4
+                            ),
+
+                            # latest progress debug
+                            "debug_monster_progress_last": round(
+                                reward_debug_latest.get("debug_monster_progress", 0.0), 4
+                            ),
+                            "debug_treasure_progress_last": round(
+                                reward_debug_latest.get("debug_treasure_progress", 0.0), 4
+                            ),
+                            "debug_buff_progress_last": round(
+                                reward_debug_latest.get("debug_buff_progress", 0.0), 4
+                            ),
+                            "monster_speed_factor_last": round(
+                                reward_debug_latest.get("monster_speed_factor", 1.0), 4
+                            ),
+                            "debug_monster_progress_abs_sum": round(
+                                reward_debug_abs_sum.get("debug_monster_progress", 0.0), 4
+                            ),
+                            "debug_treasure_progress_abs_sum": round(
+                                reward_debug_abs_sum.get("debug_treasure_progress", 0.0), 4
+                            ),
+                            "debug_buff_progress_abs_sum": round(
+                                reward_debug_abs_sum.get("debug_buff_progress", 0.0), 4
+                            ),
+                            "comp_survival": round(
+                                reward_component_sums.get("survival_reward", 0.0), 4
+                            ),  
+                            "comp_move_reward": round(
+                                reward_component_sums.get("move_reward", 0.0), 4
+                            ),
+                            "comp_flash_escape": round(
+                                reward_component_sums.get("flash_escape_reward", 0.0), 4
+                            ),
+                            "comp_flash_toward_monster": round(
+                                reward_component_sums.get("flash_toward_monster_penalty", 0.0), 4
+                            ),
+                            "comp_flash_waste": round(
+                                reward_component_sums.get("flash_waste_penalty", 0.0), 4
+                            ),
+                            "debug_is_flash_action_max": round(
+                                reward_debug_max.get("debug_is_flash_action", 0.0), 4
+                            ),
+                            "debug_in_flash_danger_max": round(
+                                reward_debug_max.get("debug_in_flash_danger", 0.0), 4
                             ),
                         }
 
