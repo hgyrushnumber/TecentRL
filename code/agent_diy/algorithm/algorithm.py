@@ -590,17 +590,17 @@ class Algorithm:
             "train_step": self.train_step,
         }
 
-        if self.logger:
-            self.logger.info(
-                f"[SAC] train_step:{self.train_step} "
-                f"value_loss:{results['value_loss']} "
-                f"policy_loss:{results['policy_loss']} "
-                f"entropy:{results['entropy']} "
-                f"alpha:{results['alpha']} "
-                f"q_target_mean:{results['q_target_mean']} "
-                f"q_gap:{results['q_gap']} "
-                f"critic_grad_norm:{results['critic_grad_norm']}"
-            )
+        # if self.logger:
+            # self.logger.info(
+            #     f"[SAC] train_step:{self.train_step} "
+            #     f"value_loss:{results['value_loss']} "
+            #     f"policy_loss:{results['policy_loss']} "
+            #     f"entropy:{results['entropy']} "
+            #     f"alpha:{results['alpha']} "
+            #     f"q_target_mean:{results['q_target_mean']} "
+            #     f"q_gap:{results['q_gap']} "
+            #     f"critic_grad_norm:{results['critic_grad_norm']}"
+            # )
 
         if self.monitor:
             self.monitor.put_data({os.getpid(): results})

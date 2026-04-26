@@ -190,26 +190,6 @@ def build_monitor():
         )
         .end_panel()
         .add_panel(
-            name="宝箱接近分项",
-            name_en="comp_treasure_approach",
-            type="line",
-        )
-        .add_metric(
-            metrics_name="comp_treasure_approach",
-            expr="avg(comp_treasure_approach{})",
-        )
-        .end_panel()
-        .add_panel(
-            name="距离塑形分项",
-            name_en="comp_dist_shaping",
-            type="line",
-        )
-        .add_metric(
-            metrics_name="comp_dist_shaping",
-            expr="avg(comp_dist_shaping{})",
-        )
-        .end_panel()
-        .add_panel(
             name="怪兽存在标记",
             name_en="debug_has_monster_max",
             type="line",
@@ -220,26 +200,6 @@ def build_monitor():
         )
         .end_panel()
         .add_panel(
-            name="宝箱存在标记",
-            name_en="debug_has_treasure_max",
-            type="line",
-        )
-        .add_metric(
-            metrics_name="debug_has_treasure_max",
-            expr="avg(debug_has_treasure_max{})",
-        )
-        .end_panel()
-        .add_panel(
-            name="Buff存在标记",
-            name_en="debug_has_buff_max",
-            type="line",
-        )
-        .add_metric(
-            metrics_name="debug_has_buff_max",
-            expr="avg(debug_has_buff_max{})",
-        )
-        .end_panel()
-        .add_panel(
             name="怪兽距离变化",
             name_en="debug_monster_progress_last",
             type="line",
@@ -247,26 +207,6 @@ def build_monitor():
         .add_metric(
             metrics_name="debug_monster_progress_last",
             expr="avg(debug_monster_progress_last{})",
-        )
-        .end_panel()
-        .add_panel(
-            name="宝箱距离变化",
-            name_en="debug_treasure_progress_last",
-            type="line",
-        )
-        .add_metric(
-            metrics_name="debug_treasure_progress_last",
-            expr="avg(debug_treasure_progress_last{})",
-        )
-        .end_panel()
-        .add_panel(
-            name="Buff距离变化",
-            name_en="debug_buff_progress_last",
-            type="line",
-        )
-        .add_metric(
-            metrics_name="debug_buff_progress_last",
-            expr="avg(debug_buff_progress_last{})",
         )
         .end_panel()
         .add_panel(
@@ -287,36 +227,6 @@ def build_monitor():
         .add_metric(
             metrics_name="comp_survival",
             expr="avg(comp_survival{})",
-        )
-        .end_panel()
-        .add_panel(
-            name="怪兽距离变化累计",
-            name_en="debug_monster_progress_abs_sum",
-            type="line",
-        )
-        .add_metric(
-            metrics_name="debug_monster_progress_abs_sum",
-            expr="avg(debug_monster_progress_abs_sum{})",
-        )
-        .end_panel()
-        .add_panel(
-            name="宝箱距离变化累计",
-            name_en="debug_treasure_progress_abs_sum",
-            type="line",
-        )
-        .add_metric(
-            metrics_name="debug_treasure_progress_abs_sum",
-            expr="avg(debug_treasure_progress_abs_sum{})",
-        )
-        .end_panel()
-        .add_panel(
-            name="Buff距离变化累计",
-            name_en="debug_buff_progress_abs_sum",
-            type="line",
-        )
-        .add_metric(
-            metrics_name="debug_buff_progress_abs_sum",
-            expr="avg(debug_buff_progress_abs_sum{})",
         )
         .end_panel()
         .add_panel(
@@ -377,6 +287,126 @@ def build_monitor():
         .add_metric(
             metrics_name="debug_in_flash_danger_max",
             expr="avg(debug_in_flash_danger_max{})",
+        )
+        .end_panel()
+        .add_panel(
+            name="全局怪兽势场分项",
+            name_en="comp_global_monster_field",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="comp_global_monster_field",
+            expr="avg(comp_global_monster_field{})",
+        )
+        .end_panel()
+        .add_panel(
+            name="全局宝箱势场分项",
+            name_en="comp_global_treasure_field",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="comp_global_treasure_field",
+            expr="avg(comp_global_treasure_field{})",
+        )
+        .end_panel()
+        .add_panel(
+            name="全局Buff势场分项",
+            name_en="comp_global_buff_field",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="comp_global_buff_field",
+            expr="avg(comp_global_buff_field{})",
+        )
+        .end_panel()
+        .add_panel(
+            name="怪兽势场变化",
+            name_en="debug_monster_heat_progress_last",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="debug_monster_heat_progress_last",
+            expr="avg(debug_monster_heat_progress_last{})",
+        )
+        .end_panel()
+        .add_panel(
+            name="宝箱势场变化",
+            name_en="debug_treasure_heat_progress_last",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="debug_treasure_heat_progress_last",
+            expr="avg(debug_treasure_heat_progress_last{})",
+        )
+        .end_panel()
+        .add_panel(
+            name="Buff势场变化",
+            name_en="debug_buff_heat_progress_last",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="debug_buff_heat_progress_last",
+            expr="avg(debug_buff_heat_progress_last{})",
+        )
+        .end_panel()
+        .add_panel(
+            name="初次看见宝箱奖励",
+            name_en="comp_first_seen_treasure",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="comp_first_seen_treasure",
+            expr="avg(comp_first_seen_treasure{})",
+        )
+        .end_panel()
+        .add_panel(
+            name="新看见宝箱数量",
+            name_en="debug_new_seen_treasure_count",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="debug_new_seen_treasure_count",
+            expr="avg(debug_new_seen_treasure_count{})",
+        )
+        .end_panel()
+        .add_panel(
+            name="防磨蹭惩罚",
+            name_en="comp_anti_stuck",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="comp_anti_stuck",
+            expr="avg(comp_anti_stuck{})",
+        )
+        .end_panel()
+        .add_panel(
+            name="10步位移距离",
+            name_en="debug_anti_stuck_dist_10_last",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="debug_anti_stuck_dist_10_last",
+            expr="avg(debug_anti_stuck_dist_10_last{})",
+        )
+        .end_panel()
+        .add_panel(
+            name="Buff收集分项",
+            name_en="comp_buff_collect",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="comp_buff_collect",
+            expr="avg(comp_buff_collect{})",
+        )
+        .end_panel()   
+        .add_panel(
+            name="防磨蹭触发次数",
+            name_en="debug_anti_stuck_count",
+            type="line",
+        )
+        .add_metric(
+            metrics_name="debug_anti_stuck_count",
+            expr="avg(debug_anti_stuck_count{})",
         )
         .end_panel()
 

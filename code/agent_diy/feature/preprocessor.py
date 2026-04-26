@@ -14,18 +14,9 @@ local_map：21×21×1，只包含 obstacle
 global_entity_map：128×128×4，包含 hero / treasure / monster / buff
 """
 import heapq
+from collections import deque
 import numpy as np
 from agent_diy.conf.conf import Config
-
-
-MAP_SIZE = Config.MAP_SIZE
-MAX_MONSTER_SPEED = Config.MAX_MONSTER_SPEED
-MAX_DIST_BUCKET = Config.MAX_DIST_BUCKET
-MAX_BUFF_DURATION = Config.MAX_BUFF_DURATION
-
-LOCAL_MAP_WINDOW = Config.LOCAL_MAP_WINDOW
-MAP_CHANNELS = Config.MAP_CHANNELS
-
 
 def _norm(v, v_max, v_min=0.0):
     """Normalize value to [0, 1]."""
@@ -42,6 +33,14 @@ class Preprocessor:
         self.max_step = 200
 
         self.visit_counter = {}
+
+        # 最近 N 步位置历史：
+        # 1. 用于 anti-stuck reward
+        # 2. 用于构造 10 步前相对位移特征
+        self.position_history = deque(maxlen=Config.ANTI_STUCK_WINDOW + 1)
+
+        # 本局已经第一次看见过的宝箱位置
+        self.seen_treasure_keys = set()
 
         self.last_reward_components = {}
         self.last_env_info = {}
@@ -101,7 +100,9 @@ class Preprocessor:
         # 4) scalar status
         status_feat = self._build_status_features(obs_frame_state, env_info)
 
-        # 5) 目标方向仍然保留：用于给 MLP 一个明确的最近目标方向
+        # 5) anti-stuck feature: [dx10_norm, dz10_norm]
+        anti_stuck_feat = self._build_anti_stuck_feature(hero_pos)
+        # 6) 目标方向仍然保留：用于给 MLP 一个明确的最近目标方向
         treasure_dir_feat = self._nearest_organ_path_direction_feature(
             map_info,
             extra_frame_state,
@@ -124,6 +125,7 @@ class Preprocessor:
                 global_map_feat,
                 legal_action_feat,
                 status_feat,
+                anti_stuck_feat,
                 treasure_dir_feat,
                 buff_dir_feat,
             ]
@@ -180,45 +182,9 @@ class Preprocessor:
         else:
             dir_x, dir_z = 0.0, 0.0
 
-        dist_norm = float(np.clip(best_dist / (MAP_SIZE * 1.41), 0.0, 1.0))
+        dist_norm = float(np.clip(best_dist / (Config.MAP_SIZE* 1.41), 0.0, 1.0))
 
         return np.array([dir_x, dir_z, dist_norm], dtype=np.float32)
-
-    def _nearest_organ_dist_norm(self, frame_state, sub_type):
-        hero = frame_state.get("heroes", {})
-        hero_pos = hero.get("pos", {})
-
-        hx = float(hero_pos.get("x", 0.0))
-        hz = float(hero_pos.get("z", 0.0))
-
-        min_dist_norm = 1.0
-        found = False
-
-        organs = frame_state.get("organs", [])
-
-        for organ in organs:
-            if not isinstance(organ, dict):
-                continue
-
-            if int(organ.get("status", 0)) <= 0:
-                continue
-
-            if int(organ.get("sub_type", -1)) != int(sub_type):
-                continue
-
-            pos = organ.get("pos", {})
-            if "x" not in pos or "z" not in pos:
-                continue
-
-            dx = float(pos["x"]) - hx
-            dz = float(pos["z"]) - hz
-            dist = np.sqrt(dx * dx + dz * dz)
-
-            dist_norm = float(np.clip(dist / (MAP_SIZE * 1.41), 0.0, 1.0))
-            min_dist_norm = min(min_dist_norm, dist_norm)
-            found = True
-
-        return min_dist_norm, found
 
     def compute_reward_from_transition(self, prev_obs, curr_obs, action):
         """
@@ -260,7 +226,77 @@ class Preprocessor:
         else:
             monster_progress = 0.0
 
-        monster_distance_reward = Config.REWARD_MONSTER_DISTANCE * monster_progress
+        # ------------------------------------------------------------------
+        # Global field shaping
+        # 全局势场塑形：替代旧的 monster_distance / treasure_approach / buff_approach
+        # ------------------------------------------------------------------
+        prev_monster_heat = self._entity_field_value_at_hero(
+            prev_frame_state,
+            entity_type="monster",
+        )
+        curr_monster_heat = self._entity_field_value_at_hero(
+            curr_frame_state,
+            entity_type="monster",
+        )
+
+        prev_treasure_heat = self._entity_field_value_at_hero(
+            prev_frame_state,
+            entity_type="organ",
+            sub_type=Config.ORGAN_TYPE_TREASURE,
+        )
+        curr_treasure_heat = self._entity_field_value_at_hero(
+            curr_frame_state,
+            entity_type="organ",
+            sub_type=Config.ORGAN_TYPE_TREASURE,
+        )
+
+        prev_buff_heat = self._entity_field_value_at_hero(
+            prev_frame_state,
+            entity_type="organ",
+            sub_type=Config.ORGAN_TYPE_BUFF,
+        )
+        curr_buff_heat = self._entity_field_value_at_hero(
+            curr_frame_state,
+            entity_type="organ",
+            sub_type=Config.ORGAN_TYPE_BUFF,
+        )
+
+        monster_field_progress = prev_monster_heat - curr_monster_heat
+        treasure_field_progress = curr_treasure_heat - prev_treasure_heat
+        buff_field_progress = curr_buff_heat - prev_buff_heat
+
+        field_eps = getattr(Config, "FIELD_PROGRESS_EPS", 0.005)
+
+        if abs(monster_field_progress) < field_eps:
+            monster_field_progress = 0.0
+
+        if abs(treasure_field_progress) < field_eps:
+            treasure_field_progress = 0.0
+
+        if abs(buff_field_progress) < field_eps:
+            buff_field_progress = 0.0
+        global_monster_field_reward = (
+            Config.REWARD_GLOBAL_MONSTER_FIELD * max(0.0, monster_field_progress)
+            - Config.PENALTY_GLOBAL_MONSTER_FIELD * max(0.0, -monster_field_progress)
+        )
+
+        if curr_min_dist_norm > Config.TREASURE_SAFE_DISTANCE_TH:
+            global_treasure_field_reward = (
+                Config.REWARD_GLOBAL_TREASURE_FIELD * max(0.0, treasure_field_progress)
+            )
+        else:
+            global_treasure_field_reward = (
+                -Config.PENALTY_GLOBAL_TREASURE_GREED * max(0.0, treasure_field_progress)
+            )
+
+        if curr_min_dist_norm > Config.BUFF_SAFE_DISTANCE_TH:
+            global_buff_field_reward = (
+                Config.REWARD_GLOBAL_BUFF_FIELD * max(0.0, buff_field_progress)
+            )
+        else:
+            global_buff_field_reward = (
+                -Config.PENALTY_GLOBAL_BUFF_GREED * max(0.0, buff_field_progress)
+            )
 
         monster_speed_factor = self._visible_monster_speed_factor(curr_frame_state)
         danger_penalty = (
@@ -280,48 +316,60 @@ class Preprocessor:
         flash_waste_penalty = 0.0
 
         if is_flash_action:
-            # 危险时闪现，并且闪现后明显远离怪兽
+            # 危险时闪现，并且闪现后远离怪兽：给基础奖励 + 距离增量奖励
             if in_flash_danger and monster_progress > Config.FLASH_ESCAPE_PROGRESS_TH:
-                flash_escape_reward = Config.REWARD_FLASH_ESCAPE * monster_progress
-
-            # 闪现后反而更靠近怪兽
-            elif curr_min_dist_norm < prev_min_dist_norm:
-                flash_toward_monster_penalty = (
-                    -Config.PENALTY_FLASH_TOWARD_MONSTER * abs(monster_progress)
+                flash_escape_reward = (
+                    Config.REWARD_FLASH_ESCAPE_BASE
+                    + Config.REWARD_FLASH_ESCAPE * monster_progress
                 )
+
+            # 闪现后反而更靠近怪兽：固定惩罚，不再乘很小的 progress
+            elif curr_min_dist_norm < prev_min_dist_norm:
+                flash_toward_monster_penalty = -Config.PENALTY_FLASH_TOWARD_MONSTER
 
             # 不危险时乱用闪现
             elif not in_flash_danger:
                 flash_waste_penalty = -Config.PENALTY_FLASH_WASTE
+        
         # ------------------------------------------------------------------
-        # 2) Treasure approach + collect reward from extra_info.organs/env_info
+        # First seen treasure reward
+        # 第一次看见某个宝箱位置时给奖励
         # ------------------------------------------------------------------
-        prev_min_treasure_dist_norm, prev_has_treasure = self._nearest_organ_path_dist_norm(
-            prev_observation["map_info"],
-            prev_frame_state,
-            Config.ORGAN_TYPE_TREASURE,
-        )
-        curr_min_treasure_dist_norm, curr_has_treasure = self._nearest_organ_path_dist_norm(
-            curr_observation["map_info"],
-            curr_frame_state,
-            Config.ORGAN_TYPE_TREASURE,
-        )
+        first_seen_treasure_reward = 0.0
+        new_seen_treasure_count = 0
 
-        if prev_has_treasure and curr_has_treasure:
-            treasure_progress = prev_min_treasure_dist_norm - curr_min_treasure_dist_norm
-        else:
-            treasure_progress = 0.0
+        if not hasattr(self, "seen_treasure_keys"):
+            self.seen_treasure_keys = set()
 
-        if curr_min_dist_norm > Config.TREASURE_SAFE_DISTANCE_TH:
-            treasure_approach_reward = (
-                Config.REWARD_TREASURE_APPROACH * max(0.0, treasure_progress)
-                - Config.PENALTY_TREASURE_AWAY * max(0.0, -treasure_progress)
+        for organ in curr_frame_state.get("organs", []):
+            if not isinstance(organ, dict):
+                continue
+
+            if int(organ.get("status", 0)) <= 0:
+                continue
+
+            if int(organ.get("sub_type", -1)) != Config.ORGAN_TYPE_TREASURE:
+                continue
+
+            pos = organ.get("pos", {})
+            if "x" not in pos or "z" not in pos:
+                continue
+
+            treasure_key = (
+                int(round(float(pos["x"]))),
+                int(round(float(pos["z"]))),
             )
-        else:
-            treasure_approach_reward = (
-                -Config.PENALTY_TREASURE_GREED_DANGER * max(0.0, treasure_progress)
-            )
 
+            if treasure_key not in self.seen_treasure_keys:
+                self.seen_treasure_keys.add(treasure_key)
+                new_seen_treasure_count += 1
+
+        first_seen_treasure_reward = (
+            Config.REWARD_FIRST_SEEN_TREASURE * float(new_seen_treasure_count)
+        )
+        # ------------------------------------------------------------------
+        # 2) Treasure collect reward from extra_info/env_info
+        # ------------------------------------------------------------------
         prev_treasure_count = float(prev_env_info.get("treasures_collected", 0.0))
         curr_treasure_count = float(curr_env_info.get("treasures_collected", 0.0))
         treasure_delta = max(0.0, curr_treasure_count - prev_treasure_count)
@@ -333,37 +381,18 @@ class Preprocessor:
             treasure_delta = max(0.0, float(len(prev_treasure_ids) - len(curr_treasure_ids)))
 
         treasure_score_reward = Config.REWARD_TREASURE_SCORE * treasure_delta
-        treasure_reward = treasure_approach_reward + treasure_score_reward
 
+        # 危险区吃宝箱不完全禁止，但降低收益，避免模型为了宝箱送死
+        if curr_min_dist_norm <= Config.TREASURE_SAFE_DISTANCE_TH:
+            treasure_score_reward *= Config.TREASURE_DANGER_SCORE_SCALE
+
+        # 靠近宝箱交给 global_treasure_field_reward，这里只保留真正吃到宝箱奖励
+        treasure_reward = treasure_score_reward
+
+      
         # ------------------------------------------------------------------
-        # 3) Buff approach + collect reward from extra_info.organs/env_info
+        # 3) Buff collect reward from extra_info/env_info
         # ------------------------------------------------------------------
-        prev_min_buff_dist_norm, prev_has_buff = self._nearest_organ_path_dist_norm(
-            prev_observation["map_info"],
-            prev_frame_state,
-            Config.ORGAN_TYPE_BUFF,
-        )
-        curr_min_buff_dist_norm, curr_has_buff = self._nearest_organ_path_dist_norm(
-            curr_observation["map_info"],
-            curr_frame_state,
-            Config.ORGAN_TYPE_BUFF,
-        )
-
-        if prev_has_buff and curr_has_buff:
-            buff_progress = prev_min_buff_dist_norm - curr_min_buff_dist_norm
-        else:
-            buff_progress = 0.0
-
-        if curr_min_dist_norm > Config.BUFF_SAFE_DISTANCE_TH:
-            buff_approach_reward = (
-                Config.REWARD_BUFF_APPROACH * max(0.0, buff_progress)
-                - Config.PENALTY_BUFF_AWAY * max(0.0, -buff_progress)
-            )
-        else:
-            buff_approach_reward = (
-                -Config.PENALTY_BUFF_GREED_DANGER * max(0.0, buff_progress)
-            )
-
         prev_buff_time = float(prev_obs_frame_state["heroes"].get("buff_remaining_time", 0.0))
         curr_buff_time = float(curr_obs_frame_state["heroes"].get("buff_remaining_time", 0.0))
 
@@ -376,7 +405,9 @@ class Preprocessor:
             buff_collect_delta = 1.0
 
         buff_collect_reward = Config.REWARD_BUFF_COLLECT * buff_collect_delta
-        buff_reward = buff_approach_reward + buff_collect_reward
+
+        # 靠近 Buff 交给 global_buff_field_reward，这里只保留真正吃到 Buff 奖励
+        buff_reward = buff_collect_reward
 
         # ------------------------------------------------------------------
         # 4) Survival reward
@@ -419,7 +450,32 @@ class Preprocessor:
 
         disp = np.sqrt((curr_hx - prev_hx) ** 2 + (curr_hz - prev_hz) ** 2)
         invalid_move_penalty = -Config.PENALTY_INVALID_MOVE if disp < 0.2 else 0.0
-        move_reward = Config.REWARD_MOVE * min(float(disp), 1.0)
+
+        # ------------------------------------------------------------------
+        # Anti-stuck penalty
+        # 如果当前坐标和 N 步前坐标距离太小，说明存在卡墙/磨蹭/局部摩擦
+        # ------------------------------------------------------------------
+        anti_stuck_penalty = 0.0
+        anti_stuck_dist_10 = Config.ANTI_STUCK_DISTANCE_TH
+
+        if not hasattr(self, "position_history"):
+            self.position_history = deque(maxlen=Config.ANTI_STUCK_WINDOW + 1)
+
+        self.position_history.append((curr_hx, curr_hz))
+
+        if len(self.position_history) >= Config.ANTI_STUCK_WINDOW + 1:
+            old_hx, old_hz = self.position_history[0]
+            anti_stuck_dist_10 = float(
+                np.sqrt((curr_hx - old_hx) ** 2 + (curr_hz - old_hz) ** 2)
+            )
+
+            if anti_stuck_dist_10 < Config.ANTI_STUCK_DISTANCE_TH:
+                anti_stuck_penalty = -Config.PENALTY_ANTI_STUCK
+        # 只奖励“不靠近怪兽”的移动，避免模型为了 move_reward 乱跑
+        if curr_min_dist_norm >= prev_min_dist_norm:
+            move_reward = Config.REWARD_MOVE * min(float(disp), 1.0)
+        else:
+            move_reward = 0.0
         # ------------------------------------------------------------------
         # 7) Repeat visit penalty
         # ------------------------------------------------------------------
@@ -454,20 +510,35 @@ class Preprocessor:
         raw_reward = (
             survival_reward
             + terminal_reward
-            + monster_distance_reward
+
+            # 全局势场塑形
+            + global_monster_field_reward
+            + global_treasure_field_reward
+            + global_buff_field_reward
+
+            # 近身硬危险惩罚
             + danger_penalty
+
+            # 闪现动作质量
             + flash_escape_reward
             + flash_toward_monster_penalty
             + flash_waste_penalty
+
+            # 真实事件奖励
             + treasure_reward
             + buff_reward
+            + first_seen_treasure_reward
+
+            # 行为约束
             + move_reward
             + invalid_move_penalty
             + repeat_penalty
+            + anti_stuck_penalty
+
+            # 阶段与环境分数
             + stage_reward
             + total_score_delta
         )
-
         reward_scale = float(getattr(Config, "REWARD_SCALE", 0.005))
         scaled_reward = raw_reward * reward_scale
         reward_value = float(scaled_reward)
@@ -476,18 +547,24 @@ class Preprocessor:
             "survival_reward": float(survival_reward * reward_scale),
             "terminal_reward": float(terminal_reward * reward_scale),
 
-            "monster_distance_reward": float(monster_distance_reward * reward_scale),
-            "dist_shaping": float(monster_distance_reward * reward_scale),
+            # global field shaping
+            "global_monster_field_reward": float(global_monster_field_reward * reward_scale),
+            "global_treasure_field_reward": float(global_treasure_field_reward * reward_scale),
+            "global_buff_field_reward": float(global_buff_field_reward * reward_scale),
+
+            # 兼容旧 monitor：dist_shaping 现在表示全局怪兽势场
+            "dist_shaping": float(global_monster_field_reward * reward_scale),
+
             "danger_penalty": float(danger_penalty * reward_scale),
             "monster_speed_factor": float(monster_speed_factor),
 
             "treasure_reward": float(treasure_reward * reward_scale),
-            "treasure_approach_reward": float(treasure_approach_reward * reward_scale),
             "treasure_score_reward": float(treasure_score_reward * reward_scale),
+            "first_seen_treasure_reward": float(first_seen_treasure_reward * reward_scale),
+            "debug_new_seen_treasure_count": float(new_seen_treasure_count),
 
             "buff_reward": float(buff_reward * reward_scale),
             "buff_collect_reward": float(buff_collect_reward * reward_scale),
-            "buff_approach_reward": float(buff_approach_reward * reward_scale),
 
             "invalid_move_penalty": float(invalid_move_penalty * reward_scale),
             "repeat_penalty": float(repeat_penalty * reward_scale),
@@ -498,30 +575,32 @@ class Preprocessor:
             "scaled_reward_total": float(scaled_reward),
             "reward_total": float(reward_value),
 
-            # debug: monster
+            # debug: monster distance
             "debug_prev_monster_dist": float(prev_min_dist_norm),
             "debug_curr_monster_dist": float(curr_min_dist_norm),
             "debug_prev_has_monster": float(prev_has_monster),
             "debug_curr_has_monster": float(curr_has_monster),
             "debug_monster_progress": float(monster_progress),
 
-            # debug: treasure
-            "debug_prev_treasure_dist": float(prev_min_treasure_dist_norm),
-            "debug_curr_treasure_dist": float(curr_min_treasure_dist_norm),
-            "debug_prev_has_treasure": float(prev_has_treasure),
-            "debug_curr_has_treasure": float(curr_has_treasure),
-            "debug_treasure_progress": float(treasure_progress),
-            "debug_treasure_delta": float(treasure_delta),
+            # debug: global field
+            "debug_prev_monster_heat": float(prev_monster_heat),
+            "debug_curr_monster_heat": float(curr_monster_heat),
+            "debug_monster_heat_progress": float(monster_field_progress),
 
-            # debug: buff
-            "debug_prev_buff_dist": float(prev_min_buff_dist_norm),
-            "debug_curr_buff_dist": float(curr_min_buff_dist_norm),
-            "debug_prev_has_buff": float(prev_has_buff),
-            "debug_curr_has_buff": float(curr_has_buff),
-            "debug_buff_progress": float(buff_progress),
+            "debug_prev_treasure_heat": float(prev_treasure_heat),
+            "debug_curr_treasure_heat": float(curr_treasure_heat),
+            "debug_treasure_heat_progress": float(treasure_field_progress),
+
+            "debug_prev_buff_heat": float(prev_buff_heat),
+            "debug_curr_buff_heat": float(curr_buff_heat),
+            "debug_buff_heat_progress": float(buff_field_progress),
+
+            # debug: real events
+            "debug_treasure_delta": float(treasure_delta),
             "debug_prev_buff_time": float(prev_buff_time),
             "debug_curr_buff_time": float(curr_buff_time),
             "debug_buff_collect_delta": float(buff_collect_delta),
+
             "move_reward": float(move_reward * reward_scale),
 
             "flash_escape_reward": float(flash_escape_reward * reward_scale),
@@ -530,6 +609,8 @@ class Preprocessor:
 
             "debug_is_flash_action": float(is_flash_action),
             "debug_in_flash_danger": float(in_flash_danger),
+            "anti_stuck_penalty": float(anti_stuck_penalty * reward_scale),
+            "debug_anti_stuck_dist_10": float(anti_stuck_dist_10),
         }
 
         self.last_reward_components = dict(reward_components)
@@ -573,10 +654,10 @@ class Preprocessor:
             else:
                 dir_x, dir_z = 0.0, 0.0
 
-            dist_norm = float(np.clip(dist / (MAP_SIZE * 1.41), 0.0, 1.0))
+            dist_norm = float(np.clip(dist / (Config.MAP_SIZE* 1.41), 0.0, 1.0))
 
             speed = float(m.get("speed", 0.0))
-            speed_norm = 0.0 if speed < 0 else _norm(speed, MAX_MONSTER_SPEED)
+            speed_norm = 0.0 if speed < 0 else _norm(speed, Config.MAX_MONSTER_SPEED)
 
             interval = float(m.get("monster_interval", 300.0))
             interval_norm = _norm(interval, 300.0)
@@ -592,7 +673,7 @@ class Preprocessor:
 
         return np.array(feats, dtype=np.float32)
     def _build_status_features(self, frame_state, env_info):
-        hero = frame_state["heroes"]
+        hero = frame_state.get("heroes", {})
 
         step_no = float(env_info.get("step_no", 0))
         max_step = float(env_info.get("max_step", 1000))
@@ -611,7 +692,7 @@ class Preprocessor:
         buff_ratio = collected_buff / max(total_buff, 1.0)
 
         buff_remaining = float(hero.get("buff_remaining_time", 0))
-        buff_remaining_norm = _norm(buff_remaining, MAX_BUFF_DURATION)
+        buff_remaining_norm = _norm(buff_remaining, Config.MAX_BUFF_DURATION)
 
         return np.array(
             [
@@ -624,6 +705,33 @@ class Preprocessor:
             ],
             dtype=np.float32,
         )
+
+    def _build_anti_stuck_feature(self, hero_pos):
+        """
+        Build anti-stuck feature.
+
+        Returns:
+            [dx10_norm, dz10_norm]
+
+        含义：
+            当前英雄位置相对 N 步前位置的位移。
+            如果历史不足 N 步，则返回 [0, 0]。
+        """
+        curr_x = float(hero_pos.get("x", 0.0))
+        curr_z = float(hero_pos.get("z", 0.0))
+
+        if (
+            not hasattr(self, "position_history")
+            or len(self.position_history) < Config.ANTI_STUCK_WINDOW+1
+        ):
+            return np.array([0.0, 0.0], dtype=np.float32)
+
+        old_x, old_z = self.position_history[0]
+
+        dx10_norm = float(np.clip((curr_x - old_x) / Config.MAP_SIZE, -1.0, 1.0))
+        dz10_norm = float(np.clip((curr_z - old_z) / Config.MAP_SIZE, -1.0, 1.0))
+
+        return np.array([dx10_norm, dz10_norm], dtype=np.float32)
 
     # ======================================================================
     # Scalar feature helpers
@@ -656,7 +764,7 @@ class Preprocessor:
             dz = mz - hz
             dist = np.sqrt(dx * dx + dz * dz)
 
-            dist_norm = float(np.clip(dist / (MAP_SIZE * 1.41), 0.0, 1.0))
+            dist_norm = float(np.clip(dist / (Config.MAP_SIZE* 1.41), 0.0, 1.0))
             min_dist_norm = min(min_dist_norm, dist_norm)
 
         return float(min_dist_norm)
@@ -693,7 +801,7 @@ class Preprocessor:
             if speed < 0:
                 continue
 
-            max_speed_norm = max(max_speed_norm, _norm(speed, MAX_MONSTER_SPEED))
+            max_speed_norm = max(max_speed_norm, _norm(speed, Config.MAX_MONSTER_SPEED))
 
         return 1.0 + max_speed_norm
   
@@ -937,30 +1045,9 @@ class Preprocessor:
 
         # fallback：局部不可达或目标不在局部视野内时，继续用全局欧氏方向
         return self._nearest_organ_direction_feature(frame_state, organs, sub_type)
-    def _nearest_organ_path_dist_norm(self, map_info, frame_state, sub_type):
-        """
-        Return normalized local reachable path cost to nearest organ.
 
-        If no reachable target exists inside local map, fallback to Euclidean distance.
-        """
-        organs = frame_state.get("organs", [])
-        walkable = self._local_walkable_grid(map_info)
-        targets = self._get_local_organ_targets(frame_state, organs, sub_type)
 
-        found, path_cost, _ = self._shortest_path_to_targets(walkable, targets)
-
-        if found:
-            dist_norm = float(
-                np.clip(
-                    path_cost / max(Config.LOCAL_MAP_WINDOW * 1.5, 1.0),
-                    0.0,
-                    1.0,
-                )
-            )
-            return dist_norm, True
-
-        # fallback：如果局部没有可达目标，则用全局欧氏距离
-        return self._nearest_organ_dist_norm(frame_state, sub_type)
+    
     def _make_gaussian_kernel(self, sigma):
         radius = int(np.ceil(3 * sigma))
         ax = np.arange(-radius, radius + 1, dtype=np.float32)
@@ -1085,3 +1172,85 @@ class Preprocessor:
             )
 
         return global_map
+    def _gaussian_value_at_distance(self, dist, sigma):
+        sigma = max(float(sigma), 1e-6)
+        return float(np.exp(-(dist * dist) / (2.0 * sigma * sigma)))
+   
+    def _entity_field_value_at_hero(self, frame_state, sub_type=None, entity_type="organ"):
+        """
+        Return hero's value in a global entity potential field.
+
+        注意：
+        这里用于 reward 势场，不复用 CNN heatmap sigma。
+        CNN sigma 负责定位，reward sigma 负责更大范围的方向引导。
+        """
+        hero = frame_state.get("heroes", {})
+        hero_pos = hero.get("pos", {})
+
+        hx = float(hero_pos.get("x", 0.0))
+        hz = float(hero_pos.get("z", 0.0))
+
+        best_heat = 0.0
+
+        if entity_type == "monster":
+            for m in frame_state.get("monsters", []):
+                if not isinstance(m, dict):
+                    continue
+
+                pos = m.get("pos", {})
+                if "x" not in pos or "z" not in pos:
+                    continue
+
+                mx = float(pos.get("x", -1))
+                mz = float(pos.get("z", -1))
+                if mx < 0 or mz < 0:
+                    continue
+
+                speed = float(m.get("speed", 1.0))
+                speed_norm = np.clip(
+                    speed / max(Config.MAX_MONSTER_SPEED, 1e-6),
+                    0.0,
+                    1.0,
+                )
+
+                sigma = Config.REWARD_MONSTER_FIELD_SIGMA * (1.0 + 0.3 * speed_norm)
+
+                dist = np.sqrt((mx - hx) ** 2 + (mz - hz) ** 2)
+                best_heat = max(
+                    best_heat,
+                    self._gaussian_value_at_distance(dist, sigma),
+                )
+
+            return float(best_heat)
+
+        for organ in frame_state.get("organs", []):
+            if not isinstance(organ, dict):
+                continue
+            if int(organ.get("status", 0)) <= 0:
+                continue
+            if int(organ.get("sub_type", -1)) != int(sub_type):
+                continue
+
+            pos = organ.get("pos", {})
+            if "x" not in pos or "z" not in pos:
+                continue
+
+            ox = float(pos.get("x", -1))
+            oz = float(pos.get("z", -1))
+            if ox < 0 or oz < 0:
+                continue
+
+            if int(sub_type) == Config.ORGAN_TYPE_TREASURE:
+                sigma = Config.REWARD_TREASURE_FIELD_SIGMA
+            elif int(sub_type) == Config.ORGAN_TYPE_BUFF:
+                sigma = Config.REWARD_BUFF_FIELD_SIGMA
+            else:
+                sigma = 20.0
+
+            dist = np.sqrt((ox - hx) ** 2 + (oz - hz) ** 2)
+            best_heat = max(
+                best_heat,
+                self._gaussian_value_at_distance(dist, sigma),
+            )
+
+        return float(best_heat)

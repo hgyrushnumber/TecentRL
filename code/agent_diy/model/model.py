@@ -44,6 +44,7 @@ class FeatureEncoder(nn.Module):
         global_map_feat,    # GLOBAL_MAP_FEATURE_DIM: 4 * 128 * 128
         legal_action,       # 16
         status_feat,        # 6
+        anti_stuck_feat,    # 2, [dx10_norm, dz10_norm]
         treasure_dir_feat,  # 3
         buff_dir_feat,      # 3
     ]
@@ -74,8 +75,9 @@ class FeatureEncoder(nn.Module):
         self.global_map_end = self.local_map_end + Config.FEATURES[3]
         self.legal_end = self.global_map_end + Config.FEATURES[4]
         self.status_end = self.legal_end + Config.FEATURES[5]
-        self.treasure_dir_end = self.status_end + Config.FEATURES[6]
-        self.buff_dir_end = self.treasure_dir_end + Config.FEATURES[7]
+        self.anti_stuck_end = self.status_end + Config.FEATURES[6]
+        self.treasure_dir_end = self.anti_stuck_end + Config.FEATURES[7]
+        self.buff_dir_end = self.treasure_dir_end + Config.FEATURES[8]
 
         if self.buff_dir_end != Config.DIM_OF_OBSERVATION:
             raise ValueError(
@@ -147,6 +149,8 @@ class FeatureEncoder(nn.Module):
 
         # ------------------------------------------------------------------
         # Scalar MLP
+        # scalar_dim 自动包含：
+        # hero + monster + legal + status + anti_stuck + treasure_dir + buff_dir
         # ------------------------------------------------------------------
         self.scalar_encoder = nn.Sequential(
             make_fc_layer(scalar_dim, hidden_dim),
@@ -166,7 +170,8 @@ class FeatureEncoder(nn.Module):
         global_map_flat = obs[:, self.local_map_end:self.global_map_end]
         legal_feat = obs[:, self.global_map_end:self.legal_end]
         status_feat = obs[:, self.legal_end:self.status_end]
-        treasure_dir_feat = obs[:, self.status_end:self.treasure_dir_end]
+        anti_stuck_feat = obs[:, self.status_end:self.anti_stuck_end]
+        treasure_dir_feat = obs[:, self.anti_stuck_end:self.treasure_dir_end]
         buff_dir_feat = obs[:, self.treasure_dir_end:self.buff_dir_end]
 
         scalar_feat = torch.cat(
@@ -175,6 +180,7 @@ class FeatureEncoder(nn.Module):
                 monster_feat,
                 legal_feat,
                 status_feat,
+                anti_stuck_feat,
                 treasure_dir_feat,
                 buff_dir_feat,
             ],
